@@ -13,7 +13,7 @@ A system for Amazon's S3 Glacier tape-backup service designed to maximum cost sa
 Let's say you have multiple TBs of data stored locally on drives. Perhaps mirrored on multiple drives. It is still not sufficient for catastrophic losses like fire, lightning, theft, filesystem corruption. An LTO tape drive is very expensive, a hassle to manage and usually overkill for many users unless you have 100s of TBs. You want an insurance policy where the data can be stored on tape in a datacenter that is cheap, secure and with an indefinite time period. And you need to make occasional incremental backups.
 
 ### The Solution: AWS S3 Glacier Deep Archive
-AWS S3 Glacier Deep Archive is a tape backup service. It is cheap (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system manages AWS to obtain the most benefit for the cheapest price.
+AWS S3 Glacier Deep Archive is a tape backup service. It is cheap (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system manages AWS to obtain the most benefit for the cheapest price. The assumption of this system is you want an insurance policy against catastrophic risk. You might never make restorations due to the cost. Your primary backups are elsewhere such as on local hard drives. A restoration would be a once in a lifetime event for the entire thing, although it's designed to be modular so restoring smaller pieces would be affordable.
 
 ### The Strategy: "Bags"
 
