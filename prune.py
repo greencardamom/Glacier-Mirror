@@ -38,50 +38,68 @@ def main():
     with open(args.inventory, 'r') as f:
         inventory = json.load(f)
 
-    # 1. Identify all "Live" bags currently in the inventory
+    # 1. THE WHITELIST: Every bag mentioned in the inventory stays.
     live_bags = set()
     for source in inventory.get('molecular_sources', {}).values():
         for atom in source.get('atomic_units', {}).values():
             if atom.get('archive_key'):
                 live_bags.add(atom['archive_key'])
 
-    # 2. List all bags physically present in S3
-    current_year = datetime.now().strftime('%Y')
-    prefix = f"{current_year}-backup/"
-    
-    print(f"Scanning S3 bucket '{S3_BUCKET}' under prefix '{prefix}'...")
+    # 2. THE GLOBAL SCAN: Look at every file in the bucket.
+    print(f"Scanning entire S3 bucket '{S3_BUCKET}' for orphaned .tar bags...")
     paginator = s3.get_paginator('list_objects_v2')
     all_s3_keys = []
+    
     try:
-        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+        # We scan the root (Prefix='') to find legacy bags from any year
+        for page in paginator.paginate(Bucket=S3_BUCKET):
             for obj in page.get('Contents', []):
-                if obj['Key'].endswith('.tar'):
-                    all_s3_keys.append(obj['Key'])
+                key = obj['Key']
+                # PROTECT SYSTEM ARTIFACTS: Only consider .tar files outside system/manifests
+                if key.endswith('.tar'):
+                    if "/system/" not in key and "/manifests/" not in key:
+                        all_s3_keys.append(key)
     except Exception as e:
         print(f"Error accessing S3: {e}")
         return
 
-    # 3. Compare
+    # 3. IDENTIFY OBSOLETE
     obsolete_keys = [k for k in all_s3_keys if k not in live_bags]
 
     if not obsolete_keys:
-        print("No obsolete bags found. S3 is in sync with Inventory.")
+        print("Success: S3 is in sync with Inventory. No orphaned bags found.")
         return
 
-    print(f"Found {len(obsolete_keys)} obsolete bags on S3.")
+    print(f"Found {len(obsolete_keys)} obsolete bags across all backup years.")
 
+    # 4. PREPARE BATCH DELETION
+    keys_to_delete = []
     for key in obsolete_keys:
         age_days = get_s3_file_age(key)
         
+        # Protect against Early Deletion Fees (The 180-Day Rule)
         if args.check_age and age_days is not None and age_days < 180:
-            print(f"    [GUARDED] {key} is only {age_days} days old. Skipping deletion.")
+            print(f"    [GUARDED] {key} is {age_days}d old (<180). Skipping.")
             continue
         
         if args.delete:
-            print(f"    [DELETING] {key} ({age_days} days old)...")
-            s3.delete_object(Bucket=S3_BUCKET, Key=key)
+            keys_to_delete.append({'Key': key})
+            print(f"    [STAGING] {key} ({age_days}d old)")
         else:
-            print(f"    [DRY RUN] Would delete {key} ({age_days} days old)")
+            print(f"    [DRY RUN] Would delete {key} ({age_days}d old)")
+
+    # 5. EXECUTE BULK DELETE
+    if args.delete and keys_to_delete:
+        print(f"\n--- EXECUTING BULK DELETE ({len(keys_to_delete)} files) ---")
+        # AWS S3 delete_objects can take up to 1000 keys per request
+        for i in range(0, len(keys_to_delete), 1000):
+            batch = keys_to_delete[i:i + 1000]
+            try:
+                s3.delete_objects(Bucket=S3_BUCKET, Delete={'Objects': batch})
+                print(f"    Deleted batch of {len(batch)} items.")
+            except Exception as e:
+                print(f"    [ERROR] Batch deletion failed: {e}")
+        print("[OK] Cleanup finished.")
 
 if __name__ == "__main__":
     main()

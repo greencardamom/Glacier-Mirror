@@ -1,0 +1,14 @@
+#
+# exclude.txt - used by tar's '--exclude-from=FILE' 
+#               See 'man tar' for more
+#
+# Example exclude.txt
+#
+#	data/cache
+#	
+# This will exclude the path
+#	/home/my/data/cache
+#
+# The Glacier program uses tar -C making the path segments relative meaning even this would work
+#	cache
+#
