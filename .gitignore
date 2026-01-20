@@ -1,0 +1,12 @@
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Local runtime data (in case you test-run here)
+inventory.json
+list.txt
+*.tar
+glacier_env/
+
+# System junk
+.DS_Store
