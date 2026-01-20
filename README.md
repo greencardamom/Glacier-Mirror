@@ -1,23 +1,25 @@
 # Glacier Backup System
 
 **Created:** January 2026
-**Author:** greenc
+**Author:** Greenc
+
+A system for interfacing with Amazon S3 Glacier tape backup service for maximum cost savings and automated operation.
 
 ---
 
-## 1. Introduction: The "Living" Insurance Policy
+## 1. Introduction: The Tape Backup Insurance Policy
 
 ### The Problem
-Let's say you have multiple TBs of data stored locally on drives. Maybe even multiple hard drives. This is still not sufficient in case of a catastrophic loss like fire, lightning, theft, filesystem corruption. An LTO tape drive is very expensive, a hassle to manage and often overkill for home users. You need an insurance policy where the data can be stored on tape in a remote datacenter that is cheap, secure and has an indefinite time period. And you need a way to make incremental backups as your local files change.
+Let's say you have multiple TBs of data stored locally on drives. Maybe even mirrored on multiple drives. This is not sufficient for catastrophic loss like fire, lightning, theft, filesystem corruption. An LTO tape drive is very expensive, a hassle to manage and usually overkill for home users. You need an insurance policy where the data can be stored on tape in a remote datacenter that is cheap, secure and has an indefinite time period. And you need a way to make incremental backups.
 
 ### The Solution: Amazon S3 Deep Archive
-Amazon S3 Glacier Deep Archive is extremely cheap for storage (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs significant API fees. This system bridges the gap by treating S3 as a "Write-Mostly" tape archive.
+Amazon S3 Glacier Deep Archive is a tape backup service. It is extremely cheap for storage (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system bridges the gap by treating S3 as a "Write-Mostly" tape archive.
 
 ### The Strategy: "Bags"
 Amazon has a **180-day minimum retention policy**. If you delete a file 30 days after uploading it, you are still charged for the full 180 days. Additionally, Amazon charges a Request Fee for every single file upload.
 
-To solve this, this system collects your files into **"Bags"** (.tar files) of roughly uniform size (e.g., 40GB).
-* **Request Fee Savings:** Grouping files into large bags drastically reduces the number of API requests, saving significant money on upload fees.
+To solve this, this system collects your files into **"Bags"** (.tar files) of roughly uniform size (e.g., 40GB). Similar to a shipping container of uniform size.
+* **Request Fee Savings:** Grouping files into large bags reduces the number of API requests, saving money on upload fees.
 * **The 180-Day Solution:** This system is designed to be run **Once Per Year**. By the time you run the 2027 backup, the 2026 bags have aged >365 days, bypassing the early deletion penalty.
 * **Atomic Updates:** If a single file within a bag changes, the entire bag is re-uploaded and the old one deleted.
 
@@ -37,19 +39,7 @@ By bagging the data, you save hundreds of dollars in request fees alone.
 
 ---
 
-## 2. Architecture Terminology
-
-* **Molecule (The Source):** A single line in `list.txt`.
-    * *Example:* `/media/greenc/Atlas12T/Notre`
-* **Atom (The Unit):** A top-level subfolder inside a Molecule. This is the **atomic packaging unit**. Everything in this folder is backed up.
-    * The system calculates one hash for this folder (including all sub-content) and never splits it across two bags.
-    * *Example:* `/media/greenc/Atlas12T/Notre/Books`
-* **Bag (The Archive):** The `.tar` file uploaded to S3. Contains one or more Atoms.
-    * *Target Size:* 40 GB (Configurable).
-
----
-
-## 3. Prerequisites & Dependencies
+## 2. Prerequisites & Dependencies
 
 Before running the system, ensure the following are installed:
 
@@ -67,7 +57,7 @@ Before running the system, ensure the following are installed:
 
 ---
 
-## 4. AWS Configuration Guide
+## 3. AWS Configuration Guide
 
 Follow these steps to set up your cloud environment from scratch.
 
@@ -114,40 +104,46 @@ Run this command on your Linux machine and paste the keys when prompted:
 ```bash
 aws configure
 ```
-* **Region:** Use the same region code from Step 1 (e.g., `us-east-1`).
+* **Region:** Use the same region code from Step 1 (e.g., `us-alaska-1`).
 * **Output format:** `json`.
+
+### Step 6: Set upload speed
+```bash
+aws configure set default.s3.max_bandwidth 5MB/s
+```
+Choose an upload speed so it does not max out your network and interfere with other applications.
 
 ---
 
-## 5. The Yearly Lifecycle: How Incremental Works
+## 4. The Yearly Lifecycle: How Incremental Works
 
 This system works best on a **yearly cadence**. Here is the lifecycle of your data:
 
 ### Year 1: The Initial Upload
-You run the script. It hashes all your local data, packs them into bags, and uploads everything to the folder `2026-backup/`. The `inventory.json` records the hash of every atom.
+You run the script. It hashes all your local data, packs them into bags, and uploads everything to the folder `2026-backup/`. It creates `inventory.json` a record of the hash of every atom.
 
 ### The Waiting Period (Jan - Dec)
-Your data sits in Deep Archive. You pay the monthly storage fee. The 180-day early deletion penalty clock ticks down. By July, your files are "mature" and free to delete without penalty.
+Your data sits in Deep Archive. You pay the monthly storage fee. 
 
 ### Year 2: The Incremental Run
-It is now January 2027. You run the script again. It re-scans your local drive and compares it to the `inventory.json`.
+It is now January 2027. You run the script again. It re-scans your local drive and compares it to the previous `inventory.json` and updates it.
 
 **Scenario A: Data Unchanged (95% of your files)**
-* The script sees the hash matches.
+* The script sees the hash matches ie. the file is unchanged.
 * **Action:** Skips upload entirely.
 * **Cost:** $0.
-* **Result:** The inventory points to the existing file in `2026-backup/`.
+* **Result:** The inventory.json points to the existing file in `2026-backup/`.
 
 **Scenario B: Data Changed (5% of your files)**
-* The script sees the hash has changed (or new files added).
+* The script sees the hash has changed (or new files added)
 * **Action:** Re-packs just those specific atoms into a NEW bag and uploads it to `2027-backup/`.
 * **Cost:** Small upload fee for just the changes.
-* **Result:** The inventory updates to point to the new file in `2027-backup/`.
+* **Result:** The inventory.json is updated to point to the new file in `2027-backup/`.
 
 ### The Cleanup (Pruning)
-After the Year 2 run, you have a mix of 2026 and 2027 files in your inventory. However, the *old versions* of the changed files are still sitting in `2026-backup/`, costing you money.
+After the Year 2 run, you have a mix of 2026 and 2027 files in your inventory.json - However, the *old versions* of the changed files are still sitting in `2026-backup/`, costing you money.
 * You run `prune.py`.
-* It detects that some of the old 2026 bags are no longer referenced by the inventory.
+* It detects that some of the old 2026 bags are no longer referenced by inventory.json
 * It deletes them from S3.
 * **No Penalty:** Because they sat there for >180 days, deleting them is free.
 
@@ -168,36 +164,48 @@ inventory_file = /home/greenc/glacier/inventory.json
 mnt_base = /home/greenc/mnt
 ```
 
-* **`s3_bucket`:** The name of your S3 bucket (see AWS Configuration Guide above).
-* **`target_bag_gb`:** The max size of each bag. Recommend 10GB to 100GB depending on your data. Note that large data files like VMs will get their own bag as large as needed.
-* **`staging_dir`:** A temporary directory used for creating a bag (.tar) file. It should have enough free space for your largest bag.
-* **`manifest_dir`:** Where to put the manifest files.
-* **`inventory_file`:** Location of the inventory file.
-* **`mnt_base`:** Root mounting point for a remote server for SSHFS purposes.
+* **`s3_bucket`:** The name of your S3 bucket created during the AWS Configuration Guide above.
+* **`target_bag_gb`:** The max size of each bag. Recommend 10GB to 100GB depending on your data. Note that large data files like VMs will get their own bag as large as needed to keep it as a single bag.
+* **`staging_dir`:** A temporary directory used for creating bag (.tar) files. It should have enough free space for your largest bag.
+* **`manifest_dir`:** Where to store the manifest files.
+* **`inventory_file`:** Location of the inventory.json file.
+* **`mnt_base`:** Root mounting point for a remote server for SSHFS purposes. 
 
 ### `list.txt` 
-This file defines your **Molecules** (the top-level storage locations). The system scans these paths, and every **sub-directory** underneath is treated as an **Atom** (an indivisible unit for bagging purposes).
+This file defines what locations are backed up. 
 
-**Format:** Lines in `list.txt` can be either a local directory name or a remote directory name. Just list the directory path; do not include "Local" or "Remote" labels.
+**Format:** Lines in `list.txt` can be either a local directory name or a remote directory name. 
 
 **Example:**
 ```text
 rabbit:[/home/greenc/] cat list.txt
-greenc@fox:/home/greenc/Backup
-/home/greenc/Backup
+greenc@fox:/home/greenc/Books ::MOLECULE
+/home/greenc/cache/Backup ::ATOM
+/home/greenc/Desktop ::CLUSTER
 ```
-In this example, the system will backup all files on the remote server (`fox`) in the `/home/greenc/Backup` directory, and on the local server (`rabbit`) in the `/home/greenc/Backup` directory.
+
+Each line has two elements: location <space> ::TAG  .. where tag can be:
+
+* **`::ATOM`:** The specified directory and all of its subdirectories are included as a single atomic unit.
+* **`::MOLECULE`:** Each subdirectory of this directory is treated as a separate ATOM
+* **`::CLUSTER`:** Same as a MOLECULE but it also includes any files in the main directory grouped as a separate ATOM.
+
+When to use ATOM, MOLECULE or CLUSTER: The idea is to keep restoration costs low. 
+
+* **`::ATOM`:** You have a specific software project MyApp_v1/ that contains src/, bin/, lib/, and docs/. Items in this directly are useless apart, you likely would always restore the entire directory.
+* **`::MOLECULE`:** You have a Books/ folder with 500 author subdirectories. If you accidentally delete only your Dickens collection, you only have to restore the "Charles Dickens" bag (2GB). You do not have to pay to retrieve an entire 1TB /Books bag just to get one author back.
+* **`::CLUSTER`:** Your Desktop/ or My Documents/ folder. You have folders for Taxes, Receipts, Letters, but you also have 50 random PDF files sitting directly in the folder. This is the messy folder, you are not sure what you will need to restore in the future.
 
 ### `inventory.json`
-This file tracks the state of every atom. Deletion of the file will wipe the system memory and start like a fresh archive. **Keep backups of this file.** It is the database connecting the state of local and remote files.
+This is automatically created and tracks the state of every atom. Deletion of the file will wipe the system and start like a fresh archive. **Keep backups of this file.** It is the database connecting the state of local and remote files.
 
 * **Recommendation:** If you lose this file by accident, delete all prior files on S3 and start over with a fresh upload to prevent massive duplication.
 * **`last_metadata_hash`:** Used to detect changes.
-* **`tar_id`:** The bag assignment (e.g., `bag_001`).
+* **`tar_id`:** The bag name (e.g., `bag_001`).
 * **`archive_key`:** The exact S3 path where this file lives (e.g., `2026-backup/...`).
 
 ### `manifests/*.txt` (File-Level Indexes)
-These files provide a searchable, recursive list of every single file inside every bag. While list.txt tracks "Molecules" (top-level folders to archive), `inventory.json` tracks "Bags" and "Atoms" (sub-folders 1-level deep within Molecules), the manifests track the specific files *inside* those atomic folders.
+These files provide a searchable, recursive list of every single file inside every bag. While list.txt tracks top-level folders to archive, and `inventory.json` tracks "Atoms" (sub-folders 1-level deep within Molecules), the manifests track the specific files *inside* those atomic folders.
 
 * **Purpose:** Allows you to find a specific file (e.g., "Where is `tax_return_2024.pdf`?") without having to pay to restore and download 40GB archives just to look inside them.
 * **Format:** Plain text files generated via the `find` command.
@@ -208,7 +216,7 @@ These files provide a searchable, recursive list of every single file inside eve
     * **Benefit:** You can instantly download the entire folder of text files and `grep` them to locate data in seconds, effectively for free.
 
 **Disaster Recovery:**
-If you lose your local computer, you can bootstrap the entire system from the "system" folder in S3.
+If you lose your local computer, you can bootstrap the entire Glacier system which is automatically backed up in the "system" folder on S3.
 
 1. **Rebuild the Environment:**
    ```bash
@@ -227,20 +235,19 @@ If you lose your local computer, you can bootstrap the entire system from the "s
 
 ## 7. Quick Start
 
-### Step 1: Update glacier.cfg
+### Step 1: Update glacier.cfg (see options above)
 
-### Step 2: Create the list of "molecules"
-Create a file named `list.txt` that lists the folders you want to back up.
+### Step 2: Create the list of directories to backup (see instructions above)
 
 ### Step 3: The "Dry Run" (Simulation)
 Use this to check what *would* happen without uploading anything.
 ```bash
 ./glacier.py list.txt
 ```
-* **Output:** Generates `inventory_dryrun.json` for inspection.
+* **Output:** Generates `inventory_dryrun.json` and files in the manifest directory for inspection.
 
-### Step 4: The "Real Run" (Action)
-Use this to actually upload files and update the master inventory.
+### Step 4: The "Real Run" 
+Use this to actually upload files and update the master inventory.json
 ```bash
 ./glacier.py list.txt --run
 ```
@@ -257,7 +264,7 @@ aws s3 ls s3://greenc-bucket/2026-backup/ --human-readable --summarize
 ```
 
 **Verify Storage Class (Must be DEEP_ARCHIVE):**
-If this is not `DEEP_ARCHIVE`, you are paying significantly more than necessary.
+If this is not `DEEP_ARCHIVE`, it is not stored on tape and you are paying significantly more than necessary.
 ```bash
 aws s3api list-objects-v2 --bucket greenc-bucket --prefix 2026-backup/ --query 'Contents[].{Key: Key, StorageClass: StorageClass}' --output table
 ```
@@ -285,15 +292,49 @@ Because the system only uploads *changes*, your backup in S3 will eventually be 
 
 Use `prune.py` to identify and delete only the files that are obsolete (duplicated).
 ```bash
-./prune.py          # Dry Run
-./prune.py --delete # Execute Delete
+./prune.py                      # Dry Run
+./prune.py --delete             # Execute Delete
+./prune.py --delete --check-age # Warn and refuse to delete files if younger than 180 days
 ```
+
+## 11. Full automation
+
+### Option A: Once a Year (Safest/Simplest)
+
+```bash
+# Run at 2:00 AM on January 15th every year
+0 2 15 1 * cd /home/greenc/glacier && ./glacier.py list.txt --run && ./prune.py --delete >> /home/greenc/glacier/backup.log 2>&1
+```
+
+### Option B: Every ~182 Days (Twice a Year) 
+
+This strategy maximizes protection while strictly avoiding Amazon's early deletion fees.
+
+```bash
+# Run at 2:00 AM on January 1st
+0 2 1 1 * cd /home/greenc/glacier && ./glacier.py list.txt --run && ./prune.py --delete >> backup.log 2>&1
+# Run at 2:00 AM on July 2nd
+0 2 2 7 * cd /home/greenc/glacier && ./glacier.py list.txt --run && ./prune.py --delete >> backup.log 2>&1
+```
+
+### Option C: Exact 182-Day Interval (Day of Year Logic)
+
+Same as Option B but a precise day-count. In a leap year, Option B would technically shift by one calendar day, but in C it stays exactly 182 days apart from the start of the year.
+
+```bash
+# Executes only on Day 182 and Day 364 of each year
+0 2 * * * [ $(($(date +\%j) \% 182)) -eq 0 ] && cd /home/greenc/glacier && ./glacier.py list.txt --run && ./prune.py --delete >> /home/greenc/glacier/backup.log 2>&1
+```
+
+Why 182 days and not 180? Amazon S3 Glacier counts the "Early Deletion" period in seconds from the moment the upload completes. There are also timezone offsets and other things. This gives you some leeway. You may even want 190 days to be safe.
+
+This system, as currently designed, is for one of these backup strategies (every six months or yearly). You *can* upload more frequently than 182 days, but things get complicated quickly both technically and financially. For example, you may incure extra fees for duplicate copies (tape drives are additive not overwrite) if you forget to prune. You may incure extra fees if you make a modification change at less than 180 days. The scenarios are variable. As a suggestion: load this repo into AI and ask it specifically what you want to achieve.
 
 ---
 
 ## 11. Restoration Procedure (WARNING: Costs $$$)
 
-**Cost Warning:** Downloading 8TB of data can cost $700-$900. Only restore what you absolutely need.
+**Cost Warning:** Downloading 8TB of data can cost $700-$900. Only restore what you absolutely need. This system is designed that way into bags.
 
 ### Step 1: Locate the Bag
 Open `inventory.json` and find the `archive_key` for the folder you need.
@@ -328,7 +369,7 @@ aws s3 cp s3://greenc-bucket/2026-backup/ /media/greenc/NewDrive/Restore/ --recu
 ```
 
 ### Step 5: Extract (Sparse Mode)
-**IMPORTANT:** Use the `-S` flag to handle sparse files efficiently. This is critical for VM images.
+**IMPORTANT:** Use the `-S` flag to handle sparse files efficiently. This is particularly critical for VM images.
 ```bash
 tar -Sxvf rabbit_host-agros_bag_003.tar -C /home/greenc/Backup/VMs/
 ```

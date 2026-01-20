@@ -56,31 +56,53 @@ def format_bytes(size):
         loop += 1
     return f"{n:.2f} {power_labels[loop]}"
 
-def get_metadata_hash(directory):
-    """Generates the 'Seal' for an atomic unit."""
+def get_metadata_hash(directory, recursive=True, file_list=None):
+    """
+    Generates the 'Seal' for an atomic unit.
+    recursive=True: Standard behavior (walks everything).
+    recursive=False: Used for CLUSTER roots (hashes only files in top dir).
+    file_list: Optional list of specific filenames to hash (overrides directory walk).
+    """
     hasher = hashlib.md5()
     total_size = 0
-    for root, dirs, files in os.walk(directory):
-        dirs.sort()
-        for name in sorted(files):
-            path = os.path.join(root, name)
+    
+    # Mode A: Specific File List (Cluster Root)
+    if file_list:
+        for name in sorted(file_list):
+            path = os.path.join(directory, name)
             try:
                 stat = os.stat(path)
-                rel_path = os.path.relpath(path, directory)
-                meta_str = f"{rel_path}|{stat.st_size}|{stat.st_mtime}"
+                # rel_path is just the filename for cluster roots
+                meta_str = f"{name}|{stat.st_size}|{stat.st_mtime}"
                 hasher.update(meta_str.encode('utf-8'))
                 total_size += stat.st_size
             except OSError: continue
+            
+    # Mode B: Directory Walk (Atom/Molecule)
+    else:
+        for root, dirs, files in os.walk(directory):
+            if not recursive:
+                # If non-recursive, clear dirs so os.walk doesn't go deeper
+                dirs[:] = []
+            
+            dirs.sort()
+            for name in sorted(files):
+                path = os.path.join(root, name)
+                try:
+                    stat = os.stat(path)
+                    rel_path = os.path.relpath(path, directory)
+                    meta_str = f"{rel_path}|{stat.st_size}|{stat.st_mtime}"
+                    hasher.update(meta_str.encode('utf-8'))
+                    total_size += stat.st_size
+                except OSError: continue
+                
     return hasher.hexdigest(), total_size
 
-def generate_real_manifest(bag_name, atom_paths, is_live):
+def generate_real_manifest(bag_name, atom_definitions, is_live):
     """
-    Generates a recursive file listing for the bag using 'find'.
-    Prepends timestamp (YYYYMMDD) and appends run type.
-    Overwrites if run on the same day.
-    Saves to local disk and uploads to S3 if live.
+    Generates a recursive file listing for the bag.
+    atom_definitions: List of dicts {'path': str, 'is_cluster_root': bool, 'files': []}
     """
-    # Create the distinct filename with timestamp (Day granularity)
     timestamp = datetime.now().strftime('%Y%m%d')
     base_name = bag_name.replace(".tar", "")
     suffix = "_liverun.txt" if is_live else "_dryrun.txt"
@@ -97,9 +119,15 @@ def generate_real_manifest(bag_name, atom_paths, is_live):
             f.write(f"# Generated: {datetime.now().isoformat()}\n")
             f.write("-" * 60 + "\n")
             
-            for atom in atom_paths:
-                # Use system 'find' for speed and robustness
-                subprocess.run(["find", atom, "-type", "f"], stdout=f, check=True)
+            for atom in atom_definitions:
+                path = atom['path']
+                if atom.get('is_cluster_root', False):
+                    # For cluster roots, we only list the specific files
+                    for filename in atom.get('files', []):
+                        f.write(f"{os.path.join(path, filename)}\n")
+                else:
+                    # Standard behavior: find all files inside
+                    subprocess.run(["find", path, "-type", "f"], stdout=f, check=False)
                 
         if is_live:
              s3_client.upload_file(manifest_path, S3_BUCKET, s3_key)
@@ -110,18 +138,7 @@ def generate_real_manifest(bag_name, atom_paths, is_live):
 def upload_system_artifacts():
     """Backs up the code, config, and brain to S3 for disaster recovery."""
     print("\n--- System Artifact Backup ---")
-    # List of critical files to backup
-    sys_files = [
-        "glacier.py", 
-        "prune.py", 
-        "glacier.cfg", 
-        "list.txt", 
-        "inventory.json", 
-        "0README.md",
-        "README.md" # Checking both naming conventions just in case
-    ]
-    
-    # We use the script's own directory to find these files
+    sys_files = ["glacier.py", "prune.py", "glacier.cfg", "list.txt", "inventory.json", "0README.md", "README.md", "requirements.txt"]
     base_dir = os.path.dirname(os.path.abspath(__file__))
     s3_folder = os.path.join(S3_PREFIX, "system")
     
@@ -131,19 +148,15 @@ def upload_system_artifacts():
             s3_key = os.path.join(s3_folder, fname)
             print(f"    [UPLOADING] {fname}...")
             try:
-                # Upload as Standard (Hot) storage for instant retrieval
                 s3_client.upload_file(local_path, S3_BUCKET, s3_key)
             except Exception as e:
                 print(f"    [WARN] Failed to upload {fname}: {e}")
 
 def mount_remote_source(source_string):
-    """Parses 'user@host:/path' and mounts it. Returns (scan_path, mount_point)."""
     if ":" not in source_string:
         return os.path.abspath(source_string), None
 
     remote_conn, remote_path = source_string.split(":", 1)
-    
-    # SANITIZATION: Replace space with underscore for local mount point
     host_slug = remote_conn.split("@")[-1]
     base_slug = os.path.basename(os.path.normpath(remote_path)).replace(" ", "_")
     mount_point = os.path.join(MNT_BASE, f"{host_slug}_{base_slug}")
@@ -171,9 +184,6 @@ def unmount_remote_source(mount_point):
         subprocess.run(["fusermount", "-u", mount_point], check=True)
 
 def generate_summary(inventory, run_stats, is_live):
-    """Prints a high-level summary table of the run."""
-    
-    # TABLE 1: INVENTORY STATE
     print("\n" + "="*80)
     print(f"{'INVENTORY STATE':<45} {'ATOMS':<8} {'BAGS':<8} {'SIZE':<10}")
     print("-" * 80)
@@ -189,7 +199,8 @@ def generate_summary(inventory, run_stats, is_live):
         unique_bags = set(a.get("tar_id") for a in atoms.values() if a.get("tar_id"))
         num_bags = len(unique_bags)
         
-        display_name = source if len(source) < 43 else "..." + source[-40:]
+        display_name = source.split(' ::')[0]
+        if len(display_name) > 43: display_name = "..." + display_name[-40:]
         print(f"{display_name:<45} {num_atoms:<8} {num_bags:<8} {format_bytes(source_size):<10}")
         
         total_atoms += num_atoms
@@ -200,7 +211,6 @@ def generate_summary(inventory, run_stats, is_live):
     print(f"{'TOTALS':<45} {total_atoms:<8} {total_bags_global:<8} {format_bytes(total_size):<10}")
     print("="*80)
 
-    # TABLE 2: EXECUTION REPORT
     mode = "Real Run" if is_live else "Dry Run"
     print(f"\n{'EXECUTION REPORT (' + mode + ')':<80}")
     print("-" * 80)
@@ -217,7 +227,8 @@ def generate_summary(inventory, run_stats, is_live):
         up_str = f"{s['up_count']} ({format_bytes(s['up_bytes'])})"
         sk_str = f"{s['skip_count']} ({format_bytes(s['skip_bytes'])})"
         
-        display_name = source if len(source) < 43 else "..." + source[-40:]
+        display_name = source.split(' ::')[0]
+        if len(display_name) > 43: display_name = "..." + display_name[-40:]
         print(f"{display_name:<45} {up_str:<15} {sk_str:<15}")
 
         tot_up_cnt += s['up_count']
@@ -233,7 +244,7 @@ def generate_summary(inventory, run_stats, is_live):
 
 # --- PROCESSING ---
 
-def process_bag(bag_num, folder_list, source_root, short_name, bag_size_bytes, is_live, molecule_atoms, hostname, source_stats):
+def process_bag(bag_num, atom_list, source_root, short_name, bag_size_bytes, is_live, molecule_atoms, hostname, source_stats):
     safe_prefix = short_name.replace(" ", "_")
     tar_name = f"{hostname}_{safe_prefix}_bag_{bag_num:03d}.tar"
     tar_path = os.path.join(STAGING_DIR, tar_name)
@@ -241,14 +252,20 @@ def process_bag(bag_num, folder_list, source_root, short_name, bag_size_bytes, i
     
     print(f"\n--- Bag {bag_num:03d} [{format_bytes(bag_size_bytes)}] ---")
 
-    # Generate full paths for the manifest generator
-    full_atom_paths = [os.path.abspath(os.path.join(source_root, f)) for f in folder_list]
-    generate_real_manifest(tar_name, full_atom_paths, is_live)
+    # Prepare atom definitions for manifest
+    manifest_atoms = []
+    for atom in atom_list:
+        if atom['is_cluster_root']:
+            manifest_atoms.append({'path': source_root, 'is_cluster_root': True, 'files': atom['files']})
+        else:
+            manifest_atoms.append({'path': atom['path'], 'is_cluster_root': False})
+
+    generate_real_manifest(tar_name, manifest_atoms, is_live)
 
     needs_upload = False
-    for f in folder_list:
-        abs_p = os.path.abspath(os.path.join(source_root, f))
-        if molecule_atoms.get(abs_p, {}).get('needs_upload', True):
+    for atom in atom_list:
+        key = atom['key']
+        if molecule_atoms.get(key, {}).get('needs_upload', True):
             needs_upload = True
             break
     
@@ -258,30 +275,44 @@ def process_bag(bag_num, folder_list, source_root, short_name, bag_size_bytes, i
         source_stats['skip_bytes'] += bag_size_bytes
         return
 
-    # If we are here, we are uploading
     source_stats['up_count'] += 1
     source_stats['up_bytes'] += bag_size_bytes
 
     # Record Location
-    for f in folder_list:
-        abs_p = os.path.abspath(os.path.join(source_root, f))
-        if abs_p in molecule_atoms:
-            molecule_atoms[abs_p]['archive_key'] = s3_key
+    for atom in atom_list:
+        key = atom['key']
+        if key in molecule_atoms:
+            molecule_atoms[key]['archive_key'] = s3_key
 
     if not is_live:
         print(f"    [DRY RUN] Would upload: s3://{S3_BUCKET}/{s3_key}")
         return
 
-    # Tar and Upload
-    cmd = f"tar -Scf {tar_path} -C \"{source_root}\" " + " ".join([f"\"{f}\"" for f in folder_list])
+    # Tar Construction
+    # We must build the command carefully. 
+    # For directories: -C "parent" "folder_name"
+    # For cluster roots: -C "source_root" "file1" "file2"...
+    
+    tar_cmd_parts = [f"tar -Scf {tar_path} -C \"{source_root}\""]
+    
+    for atom in atom_list:
+        if atom['is_cluster_root']:
+            # Append all loose files
+            for f in atom['files']:
+                tar_cmd_parts.append(f"\"{f}\"")
+        else:
+            # Append the directory name relative to source_root
+            rel_path = os.path.relpath(atom['path'], source_root)
+            tar_cmd_parts.append(f"\"{rel_path}\"")
+            
+    cmd = " ".join(tar_cmd_parts)
+
     try:
         if not os.path.exists(STAGING_DIR): os.makedirs(STAGING_DIR)
         
-        # --- PHASE 1: PACKAGING ---
-        print(f"    [PACKAGING] Creating archive locally... (this may take time)")
+        print(f"    [PACKAGING] Creating archive locally...")
         subprocess.run(cmd, shell=True, check=True)
         
-        # --- PHASE 2: UPLOADING ---
         print(f"    [UPLOADING] Sending to S3 Deep Archive...")
         file_size = os.path.getsize(tar_path)
         with tqdm(total=file_size, unit='B', unit_scale=True, desc="    Progress", leave=True) as pbar:
@@ -295,69 +326,102 @@ def process_bag(bag_num, folder_list, source_root, short_name, bag_size_bytes, i
 
         os.remove(tar_path)
         
-        # Update Inventory
-        for f in folder_list:
-            abs_p = os.path.abspath(os.path.join(source_root, f))
-            if abs_p in molecule_atoms:
-                molecule_atoms[abs_p]['needs_upload'] = False
-                molecule_atoms[abs_p]['last_upload'] = datetime.now().isoformat()
+        for atom in atom_list:
+            key = atom['key']
+            if key in molecule_atoms:
+                molecule_atoms[key]['needs_upload'] = False
+                molecule_atoms[key]['last_upload'] = datetime.now().isoformat()
         print(f"    [OK] Success.")
     except Exception as e:
         print(f"    [FATAL] {e}"); sys.exit(1)
 
-def process_source(source_line, inventory, run_stats, is_live):
-    """Handles the full lifecycle for a single Molecular Source."""
-    mount_point_to_cleanup = None
+def process_source(line_raw, inventory, run_stats, is_live):
+    """Handles parsing types (ATOM, MOLECULE, CLUSTER) and processing."""
     
-    run_stats[source_line] = {'up_count': 0, 'up_bytes': 0, 'skip_count': 0, 'skip_bytes': 0}
-    source_stats = run_stats[source_line]
+    # 1. Parse Designator
+    if " ::" in line_raw:
+        path_part, type_part = line_raw.split(" ::", 1)
+        source_path = path_part.strip()
+        designator = type_part.strip().upper()
+    else:
+        source_path = line_raw.strip()
+        designator = "MOLECULE" # Default
 
+    run_stats[line_raw] = {'up_count': 0, 'up_bytes': 0, 'skip_count': 0, 'skip_bytes': 0}
+    source_stats = run_stats[line_raw]
+
+    mount_point_to_cleanup = None
     try:
-        scan_path, mount_point_to_cleanup = mount_remote_source(source_line)
+        scan_path, mount_point_to_cleanup = mount_remote_source(source_path)
         
         if not os.path.exists(scan_path):
             print(f"[ERROR] Path not found: {scan_path}")
             return
 
-        # Determine Identifiers
         short_name = os.path.basename(os.path.normpath(scan_path))
-        if ":" in source_line:
-            hostname = source_line.split(":")[0].split("@")[-1]
+        if ":" in source_path:
+            hostname = source_path.split(":")[0].split("@")[-1]
         else:
             hostname = socket.gethostname()
 
         print(f"------------------------------------------------")
-        print(f"Processing Molecule: {source_line}")
+        print(f"Processing [{designator}]: {short_name}")
         print(f"------------------------------------------------")
 
-        # Initialize Molecule in Inventory if missing
-        if source_line not in inventory["molecular_sources"]:
-            inventory["molecular_sources"][source_line] = {"atomic_units": {}}
-        
-        molecule_atoms = inventory["molecular_sources"][source_line]["atomic_units"]
+        if line_raw not in inventory["molecular_sources"]:
+            inventory["molecular_sources"][line_raw] = {"atomic_units": {}}
+        molecule_atoms = inventory["molecular_sources"][line_raw]["atomic_units"]
 
-        # 1. SCAN & UPDATE METADATA
-        subdirs = [d for d in sorted(os.listdir(scan_path)) if os.path.isdir(os.path.join(scan_path, d))]
-        items = []
-        
-        for d in subdirs:
-            full_d = os.path.abspath(os.path.join(scan_path, d))
-            current_hash, size = get_metadata_hash(full_d)
+        # 2. IDENTIFY ATOMS BASED ON DESIGNATOR
+        found_items = [] 
+
+        if designator == "ATOM":
+            found_items.append({
+                "key": scan_path, "path": scan_path, "is_cluster_root": False, "files": []
+            })
             
-            entry = molecule_atoms.get(full_d, {})
+        elif designator == "MOLECULE":
+            subdirs = [d for d in sorted(os.listdir(scan_path)) if os.path.isdir(os.path.join(scan_path, d))]
+            for d in subdirs:
+                full_p = os.path.join(scan_path, d)
+                found_items.append({
+                    "key": full_p, "path": full_p, "is_cluster_root": False, "files": []
+                })
+
+        elif designator == "CLUSTER":
+            subdirs = [d for d in sorted(os.listdir(scan_path)) if os.path.isdir(os.path.join(scan_path, d))]
+            for d in subdirs:
+                full_p = os.path.join(scan_path, d)
+                found_items.append({
+                    "key": full_p, "path": full_p, "is_cluster_root": False, "files": []
+                })
+            
+            loose_files = [f for f in sorted(os.listdir(scan_path)) if os.path.isfile(os.path.join(scan_path, f))]
+            if loose_files:
+                cluster_key = os.path.join(scan_path, "__CLUSTER_ROOT__")
+                found_items.append({
+                    "key": cluster_key, "path": scan_path, "is_cluster_root": True, "files": loose_files
+                })
+
+        # 3. SCAN METADATA & UPDATE INVENTORY
+        items_to_bag = [] 
+
+        for item in found_items:
+            if item['is_cluster_root']:
+                current_hash, size = get_metadata_hash(item['path'], recursive=False, file_list=item['files'])
+            else:
+                current_hash, size = get_metadata_hash(item['path'], recursive=True)
+
+            entry = molecule_atoms.get(item['key'], {})
             is_changed = entry.get("last_metadata_hash") != current_hash
             is_pinned = entry.get("pinned", False)
             existing_tid = entry.get("tar_id", None)
-            
-            # Preserve existing archive_key if not changing
             existing_key = entry.get("archive_key", None)
             
             tar_id = existing_tid if is_pinned else None
-            
-            # If changed, we wipe the archive_key because it will get a new one upon upload
             archive_key = existing_key if not is_changed else None
 
-            molecule_atoms[full_d] = {
+            molecule_atoms[item['key']] = {
                 "last_metadata_hash": current_hash,
                 "needs_upload": is_changed or entry.get("needs_upload", True),
                 "size_bytes": size,
@@ -367,13 +431,26 @@ def process_source(source_line, inventory, run_stats, is_live):
                 "pinned": is_pinned,
                 "last_upload": entry.get("last_upload", None)
             }
-            items.append({"path": full_d, "size": size, "name": d, "pinned": is_pinned, "tar_id": tar_id})
+            
+            item_data = item.copy()
+            item_data.update({"size": size, "pinned": is_pinned, "tar_id": tar_id})
+            items_to_bag.append(item_data)
 
-        # 2. ASSIGN BAGS
-        bag_counter = 1
+        # 4. ASSIGN BAGS (FIXED: INCREMENTAL COUNTING)
+        # Find the highest bag number already used in this inventory
+        existing_bag_nums = []
+        for unit in molecule_atoms.values():
+            tid = unit.get('tar_id')
+            if tid and tid.startswith('bag_'):
+                try:
+                    existing_bag_nums.append(int(tid.split('_')[-1]))
+                except ValueError: pass
+        
+        # Start counting from Max + 1
+        bag_counter = (max(existing_bag_nums) if existing_bag_nums else 0) + 1
         current_bag_size = 0
         
-        for item in items:
+        for item in items_to_bag:
             if item["pinned"] and item["tar_id"]:
                 continue 
             
@@ -385,26 +462,25 @@ def process_source(source_line, inventory, run_stats, is_live):
             item["tar_id"] = new_tid
             current_bag_size += item["size"]
             
-            # Update the Master Record
-            molecule_atoms[item["path"]]["tar_id"] = new_tid
+            molecule_atoms[item["key"]]["tar_id"] = new_tid
 
-        # 3. GROUP BY BAG ID
+        # 5. GROUP BY BAG ID
         bags = {}
-        for item in items:
+        for item in items_to_bag:
             tid = item["tar_id"]
             if tid not in bags:
-                bags[tid] = {"folders": [], "size": 0, "bag_num_int": int(tid.split('_')[-1]) if '_' in tid else 999}
-            bags[tid]["folders"].append(item["name"])
+                bags[tid] = {"atoms": [], "size": 0, "bag_num_int": int(tid.split('_')[-1]) if '_' in tid else 999}
+            bags[tid]["atoms"].append(item)
             bags[tid]["size"] += item["size"]
 
-        # 4. PROCESS BAGS
+        # 6. EXECUTE BAGS
         sorted_bag_ids = sorted(bags.keys(), key=lambda x: bags[x]["bag_num_int"])
 
         for tid in sorted_bag_ids:
             bag_data = bags[tid]
             process_bag(
                 bag_data["bag_num_int"], 
-                bag_data["folders"], 
+                bag_data["atoms"], 
                 scan_path, 
                 short_name, 
                 bag_data["size"], 
@@ -414,7 +490,6 @@ def process_source(source_line, inventory, run_stats, is_live):
                 source_stats
             )
 
-        # Checkpoint Save
         if is_live:
             with open(INVENTORY_FILE, 'w') as f: json.dump(inventory, f, indent=4)
         else:
@@ -453,7 +528,6 @@ def main():
 
     generate_summary(inventory, run_stats, args.run)
 
-    # *** SYSTEM BACKUP (Live Only) ***
     if args.run:
         upload_system_artifacts()
 
