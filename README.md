@@ -23,7 +23,7 @@ The basic idea is to containerize the data into uninform size 'shipping containe
 
 Note: Amazon has a **180-day minimum retention policy**. If you delete a file 30 days after uploading you are still charged for the full 180 days. Thus incremental backups only make financial sense every 6 months or more.
 
-* **Request Fee Savings:** Grouping files into large bags reduces the number of API requests.
+* **Request Fee Savings:** Grouping files into bags reduces the number of API requests.
 * **The 180-Day Solution:** This system is designed to make incremental backups **Once or Twice Per Year** due to AWS retention policy.
 * **Atomic Updates:** If a single file within a bag changes, the entire bag is re-uploaded and the old one deleted.
 
