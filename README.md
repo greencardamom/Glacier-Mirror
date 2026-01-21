@@ -1,14 +1,29 @@
-# Sovereign Glacier Engine
-![Storage](https://img.shields.io/badge/Storage-S3_Deep_Archive-blue)
-![Payload](https://img.shields.io/badge/Payload-7.09_TB-success)
-![Location](https://img.shields.io/badge/Region-US--East--1-orange)
-![Status](https://img.shields.io/badge/Status-Mission_In_Progress-critical)
+      _____ _                 _             
+     / ____| |               (_)            
+    | |  __| | __ _  ___ _ __ _  ___ _ __   
+    | | |_ | |/ _` |/ __| '__| |/ _ \ '__|  
+    | |__| | | (_| | (__| |  | |  __/ |     
+     \_____|_|\__,_|\___|_|  |_|\___|_|     
+     ____             _                      
+    |  _ \           | |                     
+    | |_) | __ _  ___| | ___   _ _ __        
+    |  _ < / _` |/ __| |/ / | | | '_ \       
+    | |_) | (_| | (__|   <| |_| | |_) |      
+    |____/ \__,_|\___|_|\_\\__,_| .__/       
+                                | |          
+                                |_|          
+    =========================================
+          G L A C I E R   B A C K U P
+    =========================================
+
 # Glacier Backup System
+![Version](https://img.shields.io/badge/Version-1.0-blue)
+![Storage](https://img.shields.io/badge/Storage-S3_Deep_Archive-informational)
 
 **Created:** January 2026
 **Author:** Greenc
 
-A system for Amazon's S3 Glacier tape-backup service designed to maximum cost savings and automate operation.
+A system for keeping files on Amazon's S3 Glacier tape-backup service, designed to maximum cost savings and automate operation.
 
 ---
 
