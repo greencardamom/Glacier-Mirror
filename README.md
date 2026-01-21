@@ -297,7 +297,7 @@ aws s3 ls s3://greenc-bucket/2026-backup/ --human-readable --summarize
 ```
 
 **Verify Storage Class (Must be DEEP_ARCHIVE):**
-If this is not `DEEP_ARCHIVE`, it is not stored on tape and you are paying significantly more than necessary.
+If the .tar files are not `DEEP_ARCHIVE`, they are not stored on tape, and you are paying significantly more than necessary. Ignore the /manifests and /systems files, they are intentionally not on tape.
 ```bash
 aws s3api list-objects-v2 --bucket greenc-bucket --prefix 2026-backup/ --query 'Contents[].{Key: Key, StorageClass: StorageClass}' --output table
 ```
