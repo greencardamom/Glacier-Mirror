@@ -15,7 +15,7 @@ Let's say you have multiple TBs of data stored locally on drives. Perhaps mirror
 ### The Solution: AWS S3 Glacier Deep Archive
 Enter Glacier Deep Archive, the AWS S3 tape backup service. It is cheap (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system manages AWS to obtain the greatest benefit for the cheapest price. 
 
-The main assumption is you want an insurance policy against catastrophic loss. You will probably never make a full restorations due to the cost. Your have other backups are elsewhere, such as on local hard drives. A complete restoration from tape would be a once in a lifetime event. But this system is also designed to modularize the data so restoring smaller pieces is very affordable. Lost a file or directory? It's easy and cheap to restore.
+The main assumption is you want an insurance policy against catastrophic loss. You will probably never make a full restorations due to the cost. Your have other backups elsewhere, such as on local hard drives. A complete restoration from tape would be a once in a lifetime event. But this system is also designed to modularize the data so restoring smaller pieces is very affordable. Lost a file or directory? It's easy and cheap to restore.
 
 ### The Strategy: "Bags"
 
