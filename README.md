@@ -231,7 +231,7 @@ The location can be a local directory or a remote directory (see example above).
 ### `exclude.txt`
 This is an exclude file used by tar. If you want to exclude directories or files within an Atom directory, use this. The exclude.txt file should be kept in the same location as glacier.py
 
-**Example exlude.txt:**
+**Example exclude.txt:**
 ```text
 number/dump
 today/bin/data

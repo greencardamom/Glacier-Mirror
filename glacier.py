@@ -241,10 +241,10 @@ def generate_summary(inventory, run_stats, is_live):
         source_size = sum(a.get("size_bytes", 0) for a in atoms.values())
         unique_bags = set(a.get("tar_id") for a in atoms.values() if a.get("tar_id"))
         num_bags = len(unique_bags)
-        
-        total_cap = num_bags * TARGET_SIZE_BYTES
-        waste_p = ((total_cap - source_size) / total_cap * 100) if total_cap > 0 else 0
-        
+    
+        total_cap = num_bags * TARGET_SIZE_BYTES        
+        waste_p = max(0.1, ((total_cap - source_size) / total_cap * 100)) if total_cap > 0 else 0
+            
         # Risk estimate: Full storage cost for the retention period
         repack_risk = (source_size / BYTES_PER_GB) * price_gb * (min_days / 30)
         
@@ -293,7 +293,7 @@ def process_bag(bag_num, atom_list, source_root, short_name, bag_size_bytes, is_
     tar_path = os.path.join(STAGING_DIR, tar_name)
     s3_key = os.path.join(S3_PREFIX, tar_name)
     
-    print(f"\n--- Bag {bag_num:03d} [{format_bytes(bag_size_bytes)}] ---")
+    print(f"\n--- Bag {bag_num:05d} [{format_bytes(bag_size_bytes)}] ---")
 
     # Prepare atom definitions for manifest
     manifest_atoms = []
@@ -623,8 +623,8 @@ def process_source(line_raw, inventory, run_stats, is_live, upload_limit_mb, is_
 
             # Save progress immediately after each bag succeeds
             if is_live:
-                # OPTIONAL DAILY BACKUP: Only runs if inventory_bak_dir is defined
-                if INVENTORY_BAK_DIR:
+                # OPTIONAL DAILY BACKUP: Only runs if directory is defined AND source file exists
+                if INVENTORY_BAK_DIR and os.path.exists(INVENTORY_FILE):
                     if not os.path.exists(INVENTORY_BAK_DIR):
                         os.makedirs(INVENTORY_BAK_DIR)
                     
@@ -635,6 +635,7 @@ def process_source(line_raw, inventory, run_stats, is_live, upload_limit_mb, is_
                     if not os.path.exists(bak_path):
                         shutil.copy2(INVENTORY_FILE, bak_path)
 
+                # Now write the current inventory (this creates the file if it doesn't exist)
                 temp_inventory = INVENTORY_FILE + ".tmp"
                 with open(temp_inventory, 'w') as f:
                     json.dump(inventory, f, indent=4)
