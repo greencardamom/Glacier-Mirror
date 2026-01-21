@@ -9,7 +9,7 @@
 **Created:** January 2026
 **Author:** Greenc
 
-A system for storing TB's of data on a tape-backup service. Designed to maximum cost savings and automatic operation.
+A system for affordably storing many TB's of data on Amazon's tape-backup service. Designed to maximum cost savings and automatic operation.
 
 ---
 
