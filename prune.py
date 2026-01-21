@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
-import boto3
+import os
+import sys
+
+try:
+    import boto3
+    from tqdm import tqdm
+except ImportError:
+    print("Error: Missing dependencies.")
+    print("Please install required packages: pip install -r requirements.txt")
+    print("Or ensure your virtual environment is activated.")
+    sys.exit(1)
+
 import json
 import argparse
-import os
 import configparser
 from datetime import datetime, timezone
 
