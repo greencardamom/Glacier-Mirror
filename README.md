@@ -172,6 +172,23 @@ manifest_dir = /home/greenc/glacier/manifests
 inventory_file = /home/greenc/glacier/inventory.json
 inventory_bak_dir = /home/greenc/glacier/invbak
 mnt_base = /home/greenc/mnt
+
+# Prices as of January 2026
+[pricing]
+min_retention_days = 180
+
+# Storage and Upload
+price_gb_month = 0.00099
+price_put_1k = 0.05
+
+# Recovery Components (N. Virginia)
+price_egress_gb = 0.09
+price_thaw_standard_gb = 0.02
+price_thaw_bulk_gb = 0.0025
+
+# Request Fees
+price_req_standard_1k = 0.10
+price_req_bulk_1k = 0.025
 ```
 
 * **`s3_bucket`:** The name of your S3 bucket created during the AWS Configuration Guide above.
@@ -181,6 +198,7 @@ mnt_base = /home/greenc/mnt
 * **`inventory_file`:** Location of the inventory.json file.
 * **`inventory_bak_dir`:** If set, an optional location to store automated backups of inventory.json - no more than 1 per file created day or per run. Recommended.
 * **`mnt_base`:** Root mounting point for a remote server for SSHFS purposes. 
+* **`[pricing]`:** Prices need to be filled in manually. They are not required, but useful for generating reports. Prices haved remained generally stable. They might change by locale.
 
 ### `list.txt` 
 This file defines what locations ("items") are backed up. 
@@ -290,9 +308,9 @@ Will limit Glacier to 20MB/s upload speed.
 
 ### Repacking
 
-The first time Glacier runs, it efficiently creates bags of uniform size. An atom larger than the set bag size can be composed of 
+The first time Glacier runs, it efficiently creates bags of uniform size. An atom larger than the set bag size can be spread across 
 multiple bags. If over time files are deleted from the atom, it might not need multiple bags anymore. But the system still maintains 
-multiple, only smaller now. This is not efficient. Repacking the bags is like defragging a hard drive, or compacting a tape: it 
+multiple bags, only smaller now. This is not efficient. Repacking the bags is like defragging a hard drive, or compacting a tape: it 
 reshuffles files around to reduce the number of bags (files) needed to store the same amount of data.
 
 To repack, first run in dryrun mode to see what it would do:
@@ -374,7 +392,7 @@ This system, as currently designed, is for backup strategies every six months or
 
 ## 11. Restoration Procedure (WARNING: Costs $$$)
 
-## Disaster Recovery (system):**
+## Disaster Recovery (system):
 If you lose your local computer, you can bootstrap the entire Glacier system which is automatically backed up in the "system" folder on S3. This will cost almost nothing because it's just a few text files and not on tape drive.
 
 1. **Rebuild the Environment:**
@@ -390,7 +408,7 @@ If you lose your local computer, you can bootstrap the entire Glacier system whi
    aws s3 cp s3://greenc-bucket/2026-backup/manifests/ ./manifests/ --recursive
    ```
 
-## Disaster Recovery (files):**
+## Disaster Recovery (files):
 
 Be aware of the costs to recover data. To thaw 10TB might cost $1,000. This is why this system was designed to be modular: you can download only the specific Bags that contain the files you need. A 40GB bag might cost around $4 to recover.
 

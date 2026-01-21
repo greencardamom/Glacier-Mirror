@@ -233,8 +233,8 @@ def generate_summary(inventory, run_stats, is_live):
     total_size = 0
     total_risk = 0
     
-    price_gb = float(config['settings'].get('price_per_gb_month', 0.00099))
-    min_days = int(config['settings'].get('min_retention_days', 180))
+    price_gb = float(config['pricing'].get('price_per_gb_month', 0.00099))
+    min_days = int(config['pricing'].get('min_retention_days', 180))
 
     for source, data in inventory.get("molecular_sources", {}).items():
         atoms = data.get("atomic_units", {})
@@ -577,8 +577,8 @@ def process_source(line_raw, inventory, run_stats, is_live, upload_limit_mb, is_
 
         # --- WASTE & COST REPORT CALCULATION ---
         # Load pricing from config but fallback to 2026 defaults
-        price_gb = float(config['settings'].get('price_per_gb_month', 0.00099))
-        min_days = int(config['settings'].get('min_retention_days', 180))
+        price_gb = float(config['pricing'].get('price_per_gb_month', 0.00099))
+        min_days = int(config['pricing'].get('min_retention_days', 180))
         
         total_data_in_source = sum(item["size"] for item in items_to_bag)
         num_bags_in_source = len(bags)
