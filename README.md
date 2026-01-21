@@ -1,20 +1,6 @@
-      _____ _                 _             
-     / ____| |               (_)            
-    | |  __| | __ _  ___ _ __ _  ___ _ __   
-    | | |_ | |/ _` |/ __| '__| |/ _ \ '__|  
-    | |__| | | (_| | (__| |  | |  __/ |     
-     \_____|_|\__,_|\___|_|  |_|\___|_|     
-     ____             _                      
-    |  _ \           | |                     
-    | |_) | __ _  ___| | ___   _ _ __        
-    |  _ < / _` |/ __| |/ / | | | '_ \       
-    | |_) | (_| | (__|   <| |_| | |_) |      
-    |____/ \__,_|\___|_|\_\\__,_| .__/       
-                                | |          
-                                |_|          
-    =========================================
-          G L A C I E R   B A C K U P
-    =========================================
+<p align="center">
+  <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAwIiBoZWlnaHQ9IjE1MCIgdmlld0JveD0iMCAwIDQwMCAxNTAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CiAgPCEtLSBNb3VudGFpbiBTaWxob3VldHRlcyAtLT4KICA8cGF0aCBkPSJNNDAgMTIwIEwxMDAgNDAgTDE2MCA4MCBMMjIwIDIwIEwyODAgMTAwIEwzNjAgNjAgTDM2MCAxMjAgTDQwIDEyMFoiIHN0cm9rZT0iIzMzMyIgc3Ryb2tlLXdpZHRoPSIzIi8+CiAgPCEtLSBHbGFjaWVyIEZsb3cgLS0+CiAgPHBhdGggZD0iTTEzNSA3MCBDIDE2MCAxMDAgMTYwIDEzMCAxMzAgMTQwIEwyNzAgMTQwIEMIDI0MCAxMzAgMjQwIDEwMCAyNjUgODBaIiBmaWxsPSIjZjhmYmZmIiBzdHJva2U9IiMzMzMiIHN0cm9rZS13aWR0aD0iMyIvPgogIDwhLS0gQ3JldmFzc2VzIChJY2UgVGV4dHVyZSkgLS0+CiAgPHBhdGggZD0iTTE3MCAxMTAgTDE5MCAxMTAgTTIwMCAxMjUgTDIzMCAxMjUgTTE4NSAxMjAgTDIxNSAxMjAiIHN0cm9rZT0iIzMzMyIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KPC9zdmc+" alt="Glacier Backup System Logo">
+</p>
 
 # Glacier Backup System
 ![Version](https://img.shields.io/badge/Version-1.0-blue)
@@ -23,7 +9,7 @@
 **Created:** January 2026
 **Author:** Greenc
 
-A system for keeping files on Amazon's S3 Glacier tape-backup service, designed to maximum cost savings and automate operation.
+A system for storing TB's of data on a tape-backup service. Designed to maximum cost savings and automatic operation.
 
 ---
 
