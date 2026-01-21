@@ -1,3 +1,8 @@
+# Sovereign Glacier Engine
+![Storage](https://img.shields.io/badge/Storage-S3_Deep_Archive-blue)
+![Payload](https://img.shields.io/badge/Payload-7.09_TB-success)
+![Location](https://img.shields.io/badge/Region-US--East--1-orange)
+![Status](https://img.shields.io/badge/Status-Mission_In_Progress-critical)
 # Glacier Backup System
 
 **Created:** January 2026
