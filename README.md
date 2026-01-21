@@ -31,7 +31,7 @@ Note: Amazon has a **180-day minimum retention policy**. If you delete a file 30
 
 * **Request Fee Savings:** Grouping files into bags reduces the number of API requests.
 * **The 180-Day Solution:** This system is designed to make incremental backups **Once or Twice Per Year** due to AWS retention policy.
-* **Atomic Updates:** If a single file within a bag changes, the entire bag is re-uploaded and the old one deleted.
+* **Atomic Updates:** If a single file within a bag changes, the entire bag is re-uploaded and the old one deleted. In this system, uploading and deleting files is so cheap as to be nearly free. They only charge much on the download/restore side.
 
 ### Cost Analysis Example (10 TB Dataset)
 Imagine you have **10 TB** of data consisting of **10 million small files** (photos, docs, code).
