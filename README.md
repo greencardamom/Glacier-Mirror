@@ -231,9 +231,8 @@ The location can be a local directory or a remote directory (see example above).
 ### `exclude.txt`
 This is an exclude file used by tar. If you want to exclude directories or files within an Atom directory, use this. The exclude.txt file should be kept in the same location as glacier.py
 
-Example:
-```bash
-cat exclude.txt
+**Example exlude.txt:**
+```text
 number/dump
 today/bin/data
 ```
@@ -304,7 +303,7 @@ aws s3api list-objects-v2 --bucket greenc-bucket --prefix 2026-backup/ --query '
 ### Upload speed
 Uploading TB of data takes a long time, days; it can cause problems on your network. It is recommend to run Glacier at about 50% of your network capacity to keep you and your ISP happy. To determine capacity, Google "broadband speed test", run it and note the upload speed. If it is reported in bits (not bytes) divide by 8. Then divide in half. For example a 350Mb (bits) connection would be comfortable at about 20MB/s (bytes). Thus:
 
-* --limit 20
+* `--limit 20`
 
 Will limit Glacier to 20MB/s upload speed. 
 
@@ -327,19 +326,19 @@ Then run the repack
 
 Generate a report of assets and costs
 
-* --report
+* `--report`
 
 ### Audit
 
 Confirm local inventory.json is in sync with files on Amazon
 
-* --audit
+* `--audit`
 
 ### Find
 
 Search all Bags to find a file. For restoration purposes
 
-* --find
+* `--find`
 
 ---
 
