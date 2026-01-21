@@ -19,7 +19,7 @@ The main assumption is you want an insurance policy against catastrophic loss. Y
 
 ### The Strategy: "Bags"
 
-The basic idea is to containerize all your data into uninform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (defineable). Track what they contain in a local manifest. This method reduces how many files you upload (API costs), and reduces how many files you need to download (API costs) if you ever need to restore some files.
+The basic idea is to containerize the data into uninform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (defineable). Track what they contain in a local manifest. This method reduces how many files are uploaded (API costs), and reduces how many files to download (API costs), if you need to restore some files.
 
 Note: Amazon has a **180-day minimum retention policy**. If you delete a file 30 days after uploading you are still charged for the full 180 days. Thus incremental backups only make financial sense every 6 months or more.
 
