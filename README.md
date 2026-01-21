@@ -21,11 +21,11 @@ Let's say you have multiple TBs of data stored locally on drives. Perhaps mirror
 ### The Solution: AWS S3 Glacier Deep Archive
 Enter Glacier Deep Archive, the AWS S3 tape backup service. It is cheap (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system manages AWS to obtain the greatest benefit for the cheapest price. 
 
-The main assumption is you want an insurance policy against catastrophic loss. You will probably never make a full restorations due to the cost. Your have other backups elsewhere, such as on local hard drives. A complete restoration from tape would be a once in a lifetime event. But this system is also designed to modularize the data so restoring smaller pieces is very affordable. Lost a file or directory? It's easy and cheap to restore.
+The main assumption is you want an insurance policy against catastrophic loss. You will probably never make a full restorations due to the cost. Your have other backups elsewhere, such as on local hard drives. A complete restoration from tape would be a once in a lifetime event. But this system is also designed to modularize the data so restoring smaller pieces is very affordable. Lost a file or directory? It's easy and cheap to restore. A 40GB chunk of data is about $4 to restore. 
 
 ### The Strategy: "Bags"
 
-The basic idea is to containerize the data into uninform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (defineable). Track what they contain in a local manifest. This method reduces how many files are uploaded (API costs), and reduces how many files to download (API costs), if you need to restore some files.
+The basic idea is to containerize the data into uninform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (defineable). Track what they contain in a local manifest. This method reduces how many files are uploaded (API costs), and reduces how many files to download (API costs), when you need to restore some files.
 
 Note: Amazon has a **180-day minimum retention policy**. If you delete a file 30 days after uploading you are still charged for the full 180 days. Thus incremental backups only make financial sense every 6 months or more.
 
