@@ -649,53 +649,59 @@ def process_source(line_raw, inventory, run_stats, is_live, upload_limit_mb, is_
         if mount_point_to_cleanup:
             unmount_remote_source(mount_point_to_cleanup)
 
-def generate_full_report(inventory):
-    print("\n" + "╔" + "═"*60 + "╗")
-    print(f"║ {'S3 GLACIER DEEP ARCHIVE: INSURANCE REPORT':^58} ║")
-    print("╠" + "═"*60 + "╣")
+def generate_full_report(inventory, config):
+    # Pricing extraction
+    p_gb = float(config.get('pricing', 'price_gb_month', fallback=0.00099))
+    p_put = float(config.get('pricing', 'price_put_1k', fallback=0.05))
+    p_egress = float(config.get('pricing', 'price_egress_gb', fallback=0.09))
     
-    # 1. Gather Raw Data
-    total_atoms = 0
-    total_size_bytes = 0
-    unique_bags = set()
-    source_counts = len(inventory.get("molecular_sources", {}))
+    # Standard Retrieval Constants
+    p_thaw_std = float(config.get('pricing', 'price_thaw_standard_gb', fallback=0.02))
+    p_req_std = float(config.get('pricing', 'price_req_standard_1k', fallback=0.10))
     
-    for source, data in inventory.get("molecular_sources", {}).items():
-        atoms = data.get("atomic_units", {})
-        total_atoms += len(atoms)
-        for atom_key, atom_data in atoms.items():
-            total_size_bytes += atom_data.get("size_bytes", 0)
-            if atom_data.get("tar_id"):
-                unique_bags.add(atom_data.get("tar_id"))
-    
-    total_gb = total_size_bytes / BYTES_PER_GB
-    num_bags = len(unique_bags)
-    
-    # 2. Financial Calculations (using config or defaults)
-    price_gb = float(config['settings'].get('price_per_gb_month', 0.00099))
-    monthly_cost = total_gb * price_gb
-    yearly_cost = monthly_cost * 12
-    
-    # Standard S3 Glacier Deep Archive Retrieval Costs (Approximate)
-    bulk_retrieval_cost = total_gb * 0.0025 # $0.0025 per GB
-    data_transfer_out = total_gb * 0.09     # ~$0.09 per GB (Internet Egress)
-    total_restore_cost = bulk_retrieval_cost + data_transfer_out
+    # Bulk Retrieval Constants
+    p_thaw_bulk = float(config.get('pricing', 'price_thaw_bulk_gb', fallback=0.0025))
+    p_req_bulk = float(config.get('pricing', 'price_req_bulk_1k', fallback=0.025))
 
-    # 3. Display the Dashboard
-    print(f"║ {'INVENTORY STATS':<30} {'VALUE':>26} ║")
-    print(f"║ {'- Managed Sources (items)':<30} {source_counts:>26} ║")
-    print(f"║ {'- Sovereign Atoms (folders)':<30} {total_atoms:>26} ║")
-    print(f"║ {'- S3 Bags (.tar files)':<30} {num_bags:>26} ║")
-    print(f"║ {'- Total Archive Size':<30} {format_bytes(total_size_bytes):>26} ║")
-    print("╟" + "─"*60 + "╢")
-    print(f"║ {'ESTIMATED MONTHLY RENT':<30} {f'${monthly_cost:.2f}':>26} ║")
-    print(f"║ {'ESTIMATED YEARLY RENT':<30} {f'${yearly_cost:.2f}':>26} ║")
-    print("╟" + "─"*60 + "╢")
-    print(f"║ {'EMERGENCY RESTORE COST':<30} {f'~${total_restore_cost:.2f}':>26} ║")
-    print(f"║ {'(Includes Retrieval + Egress)':<30} {'':>26} ║")
-    print("╚" + "═"*60 + "╝")
-    print(f"\n[NOTE] Restoration cost is based on 'Bulk' tier retrieval rates.")
-    print(f"[NOTE] Prices are estimates based on your config ({price_gb}/GB).\n")
+    # Inventory Metrics
+    total_bytes = 0
+    total_bags = set()
+    for source, data in inventory.get("molecular_sources", {}).items():
+        for atom, details in data.get("atomic_units", {}).items():
+            total_bytes += details.get('size_bytes', 0)
+            if details.get('archive_key'):
+                total_bags.add(details['archive_key'])
+
+    total_gb = total_bytes / (1024**3)
+    bag_count = len(total_bags)
+
+    # --- CALCULATIONS ---
+    monthly_cost = total_gb * p_gb
+    put_cost = (bag_count / 1000) * p_put
+    
+    # Recovery = (Thaw Fee + Egress Fee) * GB + (Requests)
+    cost_std = (total_gb * (p_thaw_std + p_egress)) + ((bag_count / 1000) * p_req_std)
+    cost_bulk = (total_gb * (p_thaw_bulk + p_egress)) + ((bag_count / 1000) * p_req_bulk)
+
+    # --- THE REPORT ---
+    print("\n" + "="*60)
+    print(f"       GLACIER ARCHIVE COST & HEALTH REPORT - {datetime.now().strftime('%Y-%m-%d')}")
+    print("="*60)
+    print(f"  TOTAL ARCHIVE:    {total_gb/1024:.2f} TB ({total_gb:.2f} GB)")
+    print(f"  TOTAL BAGS:       {bag_count}")
+    print("-" * 60)
+    print(f"  MONTHLY STORAGE:  ${monthly_cost:.2f}")
+    print(f"  EST. UPLOAD COST: ${max(0.01, put_cost):.4f} (One-time PUT fees)")
+    print("-" * 60)
+    print(f"  RECOVERY ESTIMATES (Thaw + Internet Download):")
+    print(f"  [STANDARD] (12hr): ${cost_std:.2f}  (${cost_std/bag_count:.2f}/bag)" if bag_count > 0 else "")
+    print(f"  [BULK]     (48hr): ${cost_bulk:.2f}  (${cost_bulk/bag_count:.2f}/bag)" if bag_count > 0 else "")
+    print("-" * 60)
+    
+    if total_gb > 0:
+        savings = (total_gb * 0.023) - monthly_cost
+        print(f"  SOVEREIGN SAVINGS: ${savings:.2f}/mo (vs. S3 Standard)")
+    print("="*60 + "\n")
 
 def find_file(search_term):
     """Searches through local manifests to find which bag contains a file."""
@@ -814,7 +820,7 @@ def main():
         sys.exit(0)
 
     if args.report:
-        generate_full_report(inventory)
+        generate_full_report(inventory, config)
         sys.exit(0)
 
     run_stats = {}

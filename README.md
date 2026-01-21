@@ -202,14 +202,14 @@ Each line has two elements: location <space> ::TAG  .. where tag can be:
 Examples:
 
 * **`::IMMUTABLE`:** You have a specific software project MyApp_v1/ that contains src/, bin/, lib/, and docs/. Items in this directly are useless apart, you likely would always restore the entire directory.
-* **`::MUTABLE`:** You have a Books/ folder with 500 author subdirectories. If you accidentally delete only your Dickens collection, you only have to restore the "Charles Dickens" bag (2GB). You do not have to pay to retrieve an entire 1TB /Books bag just to get one author back. Another example would /Repos with each sub-directory being the name of a repository.
+* **`::MUTABLE`:** You have a Books/ folder with 500 author subdirectories. If you accidentally delete only your Dickens collection, you only have to restore the "Charles Dickens" bag (2GB). You do not have to pay to retrieve an entire 1TB /Books bag just to get one author back.
 * **`::MUTABLE`:** You have a Repos/ folder with 50 code repository subdirectories that have a lot of data files (1TB total). If you accidentally delete only 1 repo, you only have to restore the bag that contains that repo. You do not have to pay to retrieve the entire 1TB /Repo bag had it been set IMMUTABLE. 
 * **`::MUTABLE`:** Your Desktop/ or My Documents/ folder. You have folders for Taxes, Receipts, Letters, but you also have 50 random PDF files sitting directly in the folder. This is the messy folder, you are not sure what you will need to restore in the future.
 
-The location can be a local directory or a remote directory (see example list.txt). If remote it will connect via sshfs and it assumes you have passwordless ssh configured.
+The location can be a local directory or a remote directory (see example above). If remote it will connect via sshfs. It assumes you have passwordless ssh configured.
 
 ### `exclude.txt`
-This is an exclude file used by tar. If you want to exclude directories or files within an Atom directory, use this. See `tar man` for how to use an exclude file. The exclude.txt file should be kept in the same location as glacier.py
+This is an exclude file used by tar. If you want to exclude directories or files within an Atom directory, use this. The exclude.txt file should be kept in the same location as glacier.py
 
 Example:
 ```bash
@@ -238,22 +238,6 @@ These files provide a searchable, recursive list of every single file inside eve
 * **Storage Class:** **S3 Standard (Hot)**.
     * Unlike the heavy `.tar` bags which are frozen in Glacier Deep Archive, the manifests are kept in Standard storage.
     * **Benefit:** You can instantly download the entire folder of text files and `grep` them to locate data in seconds, effectively for free.
-
-**Disaster Recovery:**
-If you lose your local computer, you can bootstrap the entire Glacier system which is automatically backed up in the "system" folder on S3.
-
-1. **Rebuild the Environment:**
-   ```bash
-   mkdir -p ~/glacier/manifests
-   cd ~/glacier
-   
-   # Download the Brain, Code, Config, and Lists
-   # (Replace '2026' with the latest year available in your bucket)
-   aws s3 cp s3://greenc-bucket/2026-backup/system/ . --recursive
-   
-   # Download the Search Index
-   aws s3 cp s3://greenc-bucket/2026-backup/manifests/ ./manifests/ --recursive
-   ```
 
 ---
 
@@ -390,10 +374,29 @@ This system, as currently designed, is for backup strategies every six months or
 
 ## 11. Restoration Procedure (WARNING: Costs $$$)
 
-**Cost Warning:** Downloading 8TB of data can cost $700-$900. Only restore what you absolutely need. This system is designed that way into bags.
+## Disaster Recovery (system):**
+If you lose your local computer, you can bootstrap the entire Glacier system which is automatically backed up in the "system" folder on S3. This will cost almost nothing because it's just a few text files and not on tape drive.
+
+1. **Rebuild the Environment:**
+   ```bash
+   mkdir -p ~/glacier/manifests
+   cd ~/glacier
+   
+   # Download the Brain, Code, Config, and Lists
+   # (Replace '2026' with the latest year available in your bucket)
+   aws s3 cp s3://greenc-bucket/2026-backup/system/ . --recursive
+   
+   # Download the Search Index
+   aws s3 cp s3://greenc-bucket/2026-backup/manifests/ ./manifests/ --recursive
+   ```
+
+## Disaster Recovery (files):**
+
+Be aware of the costs to recover data. To thaw 10TB might cost $1,000. This is why this system was designed to be modular: you can download only the specific Bags that contain the files you need. A 40GB bag might cost around $4 to recover.
 
 ### Step 1: Locate the Bag
-Open `inventory.json` and find the `archive_key` for the folder you need.
+* Option 1: Use `glacier.py --find FILENAME` to determine the Bag identifier
+* Option 2: Open `inventory.json` and find the `archive_key` for the folder you need.
 
 ### Step 2: Thaw (Move from Tape to HDD)
 **Option A: Single File (Standard Tier - 12-48 hours)**
@@ -408,6 +411,8 @@ foreach file (`aws s3 ls s3://greenc-bucket/2026-backup/ --recursive | awk '{pri
     aws s3api restore-object --bucket greenc-bucket --key "$file" --restore-request '{"Days":14,"GlacierJobParameters":{"Tier":"Bulk"}}'
 end
 ```
+
+* **Note**: Tier "Bulk" is about 20% cheaper than Tier "Standard"
 
 ### Step 3: Check Status
 Use `head-object` to check if the file is ready. Look for `"ongoing-request": "false"` in the output.
@@ -430,3 +435,9 @@ aws s3 cp s3://greenc-bucket/2026-backup/ /media/greenc/NewDrive/Restore/ --recu
 tar -Sxvf rabbit_host-agros_bag_003.tar -C /home/greenc/Backup/VMs/
 ```
 
+### Purge your S3 account
+To delete everything on your S3 Glacier tape backup
+```bash
+aws s3 rm s3://your-bucket-name --recursive
+```
+This is irreversible. 
