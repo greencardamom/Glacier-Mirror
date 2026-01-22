@@ -126,7 +126,7 @@ aws configure
 
 The architecture of this tool relies on two primary concepts: Atoms and Bags.
 
-* **Atom (stuff being shipped):** An Atom is the smallest thing the system tracks. It is a directory name. The atom will have sub-directories and files, they get "bagged" into a tar file named after the atom directory. If any file within an Atom changes—triggering a change in the Atom's metadata hash—the entire Atom is considered "dirty" and will be repacked into new bag(s) and reuploaded.
+* **Atom (stuff being shipped):** An Atom is the smallest thing the system tracks. It is a directory name. The atom will have sub-directories and files that get "bagged" into a tar file named after the atom directory. If any file within an Atom changes—triggering a change in the Atom's metadata hash—the entire Atom is considered "dirty" and will be repacked into new bag(s) and reuploaded.
 
 * **Bag (where stuff is stored):** A Bag is a .tar file of uniform size (size defined in the configuration). Bags are the physical units uploaded to S3. Bags can contain 1 atom, multiple atoms, or partial atoms. If an atom contains a single file that is too large to fit into standard size bag, the bag can increase in size. If there is not enough to fill a bag, the bag can be smaller. The standard size bag is a target not a requirement.
 
@@ -209,12 +209,12 @@ greenc@fox:/home/greenc/Books ::MUTABLE
 /home/greenc/Desktop ::MUTABLE
 ```
 
-Each line has two elements: location <space> ::TAG  .. where tag can be:
+Each line has two elements: *location* and *::TAG*  .. where tag can be:
 
 * **`::IMMUTABLE (Private Container)`:** Use this for large, standalone directories. The script grants this item total isolation. It will never share a bag with another Atom. If the item is smaller than the bag size (40GB), the bag is shipped partially empty to ensure sovereignty.
 * **`::MUTABLE (Shared Container)`:** Use this for parent directories containing many smaller folders. The script breaks these down into individual Atoms and packs them efficiently into shared 40GB bags. 
 
-Examples:
+**Examples**:
 
 * **`::IMMUTABLE`:** You have a specific software project MyApp_v1/ that contains src/, bin/, lib/, and docs/. Items in this directly are useless apart, you likely would always restore the entire directory.
 * **`::MUTABLE`:** You have a Books/ folder with 500 author subdirectories. If you accidentally delete only your Dickens collection, you only have to restore the "Charles Dickens" bag (2GB). You do not have to pay to retrieve an entire 1TB /Books bag just to get one author back.
@@ -290,7 +290,7 @@ Operation methods. **Order of `Steps` are significant!**
 
 * **Delete a line from `list.txt`**: 
   * **Step 1**: Remove the line from `list.txt`
-  * **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where `PATHNAME` will be deleted from `list.txt`
+  * **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where `PATHNAME` was deleted from `list.txt`
     * *Note: `PATHNAME` must match the deleted line. Do not include any ::tags.*
 
 * **Rename a line in `list.txt`**:
@@ -302,6 +302,10 @@ Operation methods. **Order of `Steps` are significant!**
   * **Step 1**: Add/remove the tag in `list.txt`
   * **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where the `PATHNAME` is the name from `list.txt`
     * *Note: `PATHNAME` must match the modified line without any `::tags`.*
+
+* **Edit ``::MUTABLE`` and ``::IMUTABLE`` tags**:
+  * **Step 1**: Follow **Delete a line from `list.txt`**
+  * **Step 2**: Follow **Add a new line to `list.txt`** with the new `::TAG`
 
 ### Managing Bags
 
@@ -388,7 +392,7 @@ Uploading TB of data takes a long time, even days. It can cause problems for you
 
 If multiple atoms are assigned to a bag and those atoms shrink over time (due to file deletions), the bag becomes Swiss cheese. Repacking reshuffles these atoms to fill every bag to the target size, reducing your total number of S3 objects.
 
-Repacking has significant downsides. Because bag numbers are reassigned, almost all bags need to be deleted from S3 and reuploaded. If your bags on S3 are less than 6 months old there could be costs associated. There is the time to reupload everything. Typically the minor savings of reducing the number of bag objects is not worth repacking except in a great while. 
+Repacking has significant downsides. Because bag numbers are reassigned, almost all bags need to be deleted from S3 and reuploaded. If your bags on S3 are less than 6 months old there could be costs associated. There is the time to reupload everything. Typically the minor savings of reducing the number of bag objects is not worth repacking except in a great while. If you only want to repack one atom or a few bags see the section **Consolidate multiple small bags** 
 
 To repack, first run in dryrun mode to see what it would do:
 
