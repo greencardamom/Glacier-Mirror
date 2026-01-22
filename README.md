@@ -9,7 +9,7 @@
 **Created:** January 2026
 **Author:** Greenc
 
-A system for affordably storing many TB's of data on Amazon's tape-backup service. Designed to maximum cost savings and automatic operation.
+Python tool for managing large-scale backups to Amazon S3 Glacier Deep Archive (tape backup). Designed to maximum cost savings and run automatically and incrementaly. 
 
 ---
 
@@ -303,8 +303,87 @@ aws s3api list-objects-v2 --bucket greenc-bucket --prefix 2026-backup/ --query '
 ```
 
 ---
+## 9. Operations
+
+Operation methods. **Order of operation is significant!**
+
+### Editing list.txt
+
+* Add a new line to list.txt: 
+  **Step 1**: Add the new line to list.txt
+  **Step 2**: `glacier --run`
+
+* Delete a line from list.txt: 
+  **Step 1**: Remove the line from list.txt
+  **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where pathname will be deleted from list.txt
+    *Note: `PATHNAME` must match the deleted line. Do not include any ::tags.*
+
+* Rename a line in list.txt:
+  **Step 1**: Rename the line in list.txt
+  **Step 2**: Run glacier: `glacier --reset-source OLD_PATHNAME --run` where old_pathname is the original name from list.txt
+    *Note: `OLD_PATHNAME` must match the deleted line. Do not include any ::tags.*
+
+* Edit ::ENCRYPT tags:
+  **Step 1**: Add/remove the tag in list.txt
+  **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where the pathname is the name from list.txt
+    *Note: `PATHNAME` must match the modified line. Do not include any ::tags.*
+
+### Managing Bags
+
+* **Refresh or Repair a specific bag**:
+  * *Use this if a bag is missing from S3 or you suspect corruption.*
+  * **Step 1**: Run glacier: `glacier --reset-bag BAG_ID --run`
+    * *Example*: `glacier --reset-bag bag_0001 --run`
+    * *What happens*: *The script deletes bag_0001 from S3, then immediately re-packs that data into a **new** bag ID (e.g. bag_0055) and uploads it.*
+
+* **Consolidate multiple small bags**:
+  * *Use this to merge several small bags into one efficient bag to save on "Request" fees.*
+  * *Note: Bags are soveriegn to each line in `list.txt` thus you can not merge bags across `list.txt` lines.*
+  * **Step 1**: Run glacier: `glacier --reset-bag BAG_ID_1 BAG_ID_2 ... --run`
+    * *Example*: `glacier --reset-bag bag_0001 bag_0002 bag_0003 --run`
+    * *What happens*: *The script deletes the three old bags. During the re-upload phase, it will group all that data together and pack it into as few new bags as possible.*
+
+* **Note on Bag IDs**:
+  * *When you reset a bag, the old ID (e.g. bag_0001) is permanently retired. The data will reappear in the next available highest bag number.*
+
+---
 
 ## 9. Advanced Features:
+
+### Encryption
+Glacier supports GPG encryption. It works either at the Atomic level or for a whole line in list.txt.
+
+**Prerequisites**:
+ * Encryption requires a file named `key.txt` to exist in the same directory as the script. To create this file safely:
+ * **Method A (Secure)**: Run this command to type your password without it appearing in your history: `stty -echo; printf 'Passphrase: '; read pw; stty echo; echo; echo "$pw" > key.txt && chmod 600 key.txt`
+ * **Method B (Quick)**: Run this command (Warning: your password will appear in shell history): `echo 'your_passphrase_here' > key.txt && chmod 600 key.txt`
+ * **Record Passphrase**: Record or remember your passphrase or risk never retrieving your encrypted files. Use a secure passphrase! 
+ * If you are setting up glacier for the first time, run glacier (dry run) once to generate inventory_dryrun.json. You can use this file to find the correct Atom pathnames.
+
+**Setting up Encryption**
+  **Option 1: Encrypt an entire source (line in list.txt)** Append the tag ::ENCRYPT to the line.
+```text
+/home/greenc/cache/Backup ::IMMUTABLE ::ENCRYPT
+```
+  **Option 2: Encrypt specific Atoms only (via encrypt.txt)** Create or edit encrypt.txt in the same directory as glacier.py. Add the full local mount path of the Atom.
+    * **Wrong**: greenc@mycomputer:/home/greenc/tools/artifact
+    * **Correct**: /home/greenc/mnt/mycompyter_tools/artifact
+
+**Modifying Encryption on Uploaded Data**
+
+  * **Option 1: Specific Atoms (via encrypt.txt)** *Use this to efficiently re-upload only the specific bag containing the atom.*
+
+    * **Step 1**: Find the **BagID** containing the atom:
+      * Method A: `glacier --find FILENAME` (Look for the bag name in the output).
+      * Method B: Open `inventory.json`, find the atom path, and note the `"tar_id"` (e.g., `bag_00042`).
+    * **Step 2**: Add or remove the atom path in `encrypt.txt`.
+    * **Step 3**: Run glacier: `glacier --reset-bag BAG_ID --run`
+      * *Example*: `glacier --reset-bag bag_00042 --run`
+
+  * **Option 2: Entire Source (via list.txt)** *Use this to re-upload the entire source with new settings.*
+    * **Step 1**: Add or remove the `::ENCRYPT` tag in `list.txt`.
+    * **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run`
+      *Note: `PATHNAME` must match the modified line. Do not include any ::tags.*
 
 ### Upload speed
 Uploading TB of data takes a long time, days; it can cause problems on your network. It is recommend to run Glacier at about 50% of your network capacity to keep you and your ISP happy. To determine capacity, Google "broadband speed test", run it and note the upload speed. If it is reported in bits (not bytes) divide by 8. Then divide in half. For example a 350Mb (bits) connection would be comfortable at about 20MB/s (bytes). Thus:
