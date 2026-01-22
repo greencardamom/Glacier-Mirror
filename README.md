@@ -362,12 +362,13 @@ Glacier supports GPG encryption. It works either at the Atomic level or can be a
  * *Note: If you are setting up glacier for the first time, run glacier (dry run) once to generate inventory_dryrun.json. You can use this file to find the correct Atom pathnames.*
 
 **Setting up Encryption**
-  **Option 1: Encrypt an entire source (line in list.txt)** 
-  Append the tag ::ENCRYPT to the line.
-```text
-/home/greenc/cache/Backup ::IMMUTABLE ::ENCRYPT
-```
-  **Option 2: Encrypt specific Atoms only (via encrypt.txt)** Create or edit encrypt.txt in the same directory as glacier.py. Add the full local mount path of the Atom.
+
+  **Option 1: Encrypt an entire source (line in list.txt)** Append the tag ::ENCRYPT to the line.
+  ```text
+  /home/greenc/cache/Backup ::IMMUTABLE ::ENCRYPT
+  ```
+
+  **Option 2: Encrypt specific Atoms only (via `encrypt.txt`)** Create or edit `encrypt.txt` in the same directory as glacier.py. Add the full local mount path of the Atom.
     * **Wrong**: greenc@mycomputer:/home/greenc/tools/artifact
     * **Correct**: /home/greenc/mnt/mycompyter_tools/artifact
 
