@@ -289,20 +289,6 @@ Use this to actually upload files and update the master inventory.json
 
 ---
 
-## 8. Verification & Health Checks
-
-**View Contents:**
-```bash
-aws s3 ls s3://greenc-bucket/2026-backup/ --human-readable --summarize
-```
-
-**Verify Storage Class (Must be DEEP_ARCHIVE):**
-If the .tar files are not `DEEP_ARCHIVE`, they are not stored on tape, and you are paying significantly more than necessary. Ignore the /manifests and /systems files, they are intentionally not on tape.
-```bash
-aws s3api list-objects-v2 --bucket greenc-bucket --prefix 2026-backup/ --query 'Contents[].{Key: Key, StorageClass: StorageClass}' --output table
-```
-
----
 ## 9. Operations
 
 Operation methods. **Order of `Steps` are significant!**
@@ -400,7 +386,7 @@ Glacier supports GPG encryption. It works either at the Atomic level or can be a
 
 Uploading TB of data takes a long time, even days. It can cause problems for your network. It is recommend to run Glacier at about 50% of your network capacity to keep you and your ISP happy. To determine capacity, check your upload speed at a broadband speed test service. If it is reported in bits (not bytes) divide by 8. Then divide in half. Examples:
 
-| Advertised Upload (Mbps) | ~Max Capacity (MB/s) | Recommended `--limit` (50%) |
+| Advertised Upload (Mbps) | ~Max Capacity (MB/s) | Comfortable `--limit` (50%) |
 | :--- | :--- | :--- |
 | 10 Mbps | 1.25 MB/s | `--limit 1` |
 | 40 Mbps | 5 MB/s | `--limit 2` |
@@ -411,50 +397,89 @@ Uploading TB of data takes a long time, even days. It can cause problems for you
 
 ### Repacking
 
-The first time Glacier runs, it efficiently creates bags of uniform size. An atom larger than the set bag size can be spread across 
-multiple bags. If over time files are deleted from the atom, it might not need multiple bags anymore. But the system still maintains 
-multiple bags, only smaller now. This is not efficient. Repacking the bags is like defragging a hard drive, or compacting a tape: it 
-reshuffles files around to reduce the number of bags (files) needed to store the same amount of data.
+If multiple atoms are assigned to a bag and those atoms shrink over time (due to file deletions), the bag becomes Swiss cheese. Repacking reshuffles these atoms to fill every bag to the target size, reducing your total number of S3 objects.
+
+Repacking has significant downsides. Because bag numbers are reassigned, almost all bags need to be deleted from S3 and reuploaded. If your bags on S3 are less than 6 months old there could be costs associated. There is the time to reupload everything. Typically the minor savings of reducing the number of bag objects is not worth repacking except in a great while. 
 
 To repack, first run in dryrun mode to see what it would do:
 
-* `./glacier.py list.txt --repack`
+* `./glacier list.txt --repack`
 
 Then run the repack
 
 * `./glacier.py list.txt --repack --run`
 
+It is a good idea to run an audit after a repack to make sure there are no orphan bags taking up space
+
+* `glacier list.txt --audit`
+
+If you see orphans delete them manually eg. `aws s3 rm s3://my-bucket/2026-backup/my_host-book_bag_003.tar`
+
 ### Report
 
-Generate a report of assets and costs
+The `--report` flag provides a breakdown of your archive's health, data distribution, and estimated AWS costs. It uses the pricing constants defined in your `glacier.cfg` to project both monthly storage and potential recovery fees.
 
-* `--report`
+To generate the report:
+
+* `glacier list.txt --report`
+
+**What is included in the report?**
+
+* **Total Archive Size**: Your total footprint in TB and GB.
+* **Bag Count**: Total number of .tar objects currently stored on S3.
+* **Encryption Health**: How many gigabytes of your data are AES-256 encrypted.
+* **Monthly Storage Cost**: Estimated bill based on current Glacier Deep Archive rates.
+* **Recovery Estimates**: Projected costs (Thaw + Internet Egress) for:
+    * **Single Bag**: The cost to restore one standard bag (e.g., 40GB) for minor data loss.
+    * **Full Archive**: The total "disaster recovery" cost to pull everything back from S3.
 
 ### Audit
 
-Confirm local inventory.json is in sync with files on Amazon
+The `--audit` flag performs an integrity check by comparing your local inventory.json (your "truth" file) against the actual objects currently stored in your S3 bucket.
 
-* `--audit`
+* `glacier list.txt --audit`
+
+* **What the Audit checks**:
+  * **Completeness**: Ensures every bag ID listed in your inventory actually exists on S3.
+  * **Orphans**: Identifies files existing on S3 that are not in your local inventory. Delete these to save monthly costs.
+
+* **Understanding Audit Results**
+  * **[OK]**: Your local state and S3 are perfectly synchronized.
+  * **[ALERT]**: One or more bags are missing from S3. This indicates a failed upload or accidental deletion on the AWS console. See **Managing Bags** -> **Refresh or Repair a specific bag** 
+  * **[NOTE]**: Orphan bags were found. These are safe to delete.
+    * **Method A**: `prune.py --delete` 
+      * *Delete all orphans on S3*
+      * *The `--check-age` flag will stop bags from being deleted to avoid early deletion fees on bags younger than 180 day
+    * **Method B**: `aws s3 rm s3://my-bucket/2026-backup/my_host-book_bag_003.tar` 
+      * *Target a specific bag by name*
 
 ### Find
 
-Search all Bags to find a file. For restoration purposes
+The `--find` flag is your primary tool for data recovery. It performs a reverse lookup to tell you exactly which Bag on S3 contains the file you need.
 
-* `--find`
+* `glacier list.txt --find FILENAME` (e.g., `glacier list.txt --find "tax_return.pdf"`)
+
+**How it works**:
+
+* **Manifest Scan**: The script searches the local .txt manifest files (stored in your configured manifest_dir) for the filename.
+* **Inventory Mapping**: Once the file is found in a manifest, the script cross-references it with inventory.json.
+* **Result**: It outputs the specific **Bag name**, the **Atomic name** (parent folder), and the **Source line** it belongs to (from list.txt)
 
 ---
 
 ## 10. Maintenance: Garbage Collection
 
-Because the system only uploads changes, your backup in S3 will eventually be a mix of years (e.g., some 2026 files, some 2027 files).
+Because glacier only uploads changes, your backup in S3 will eventually be a mix of years (e.g., some 2026 files, some 2027 files).
 
-Use `prune.py` to identify and delete only the files that are duplicated.
+Use `prune.py` to identify and delete files that are duplicated.
 
 ```bash
 ./prune.py                      # Dry Run
 ./prune.py --delete             # Execute Delete
 ./prune.py --delete --check-age # Refuse delete any files younger than 180 days
 ```
+
+This command is typically run in crontab immediately after an incrimental run of glacier.
 
 ## 11. Full automation
 
@@ -562,3 +587,20 @@ To delete everything on your S3 Glacier tape backup
 aws s3 rm s3://your-bucket-name --recursive
 ```
 This is irreversible. 
+
+---
+
+## 8. Verification & Health Checks
+
+**View Contents:**
+```bash
+aws s3 ls s3://greenc-bucket/2026-backup/ --human-readable --summarize
+```
+
+**Verify Storage Class (Must be DEEP_ARCHIVE):**
+If the .tar files are not `DEEP_ARCHIVE`, they are not stored on tape, and you are paying significantly more than necessary. Ignore the /manifests and /systems files, they are intentionally not on tape.
+```bash
+aws s3api list-objects-v2 --bucket greenc-bucket --prefix 2026-backup/ --query 'Contents[].{Key: Key, StorageClass: StorageClass}' --output table
+```
+
+---
