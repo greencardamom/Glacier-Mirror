@@ -357,7 +357,7 @@ Glacier supports GPG encryption. It works either at the Atomic level or can be a
 **Prerequisites**:
  * Encryption requires a file named `key.txt` to exist in the same directory as the script. To create this file safely:
    * **Method A (Secure)**: Run this command to type your password without it appearing in your history: 
-     ```text
+     ```bash
      `stty -echo; printf 'Passphrase: '; read pw; stty echo; echo; echo "$pw" > key.txt && chmod 600 key.txt`
      ```
    * **Method B (Quick)**: Run this command (Warning: your password will appear in shell history): 
@@ -382,7 +382,7 @@ Glacier supports GPG encryption. It works either at the Atomic level or can be a
 
   * **Option 1: Specific Atoms (via encrypt.txt)** *Use this to efficiently re-upload only the specific bag containing the atom.*
 
-    * **Step 1**: Find the **BagID** containing the atom:
+    * **Step 1**: Find the bag containing the atom:
       * Method A: `glacier --find FILENAME` (Look for the bag name in the output).
       * Method B: Open `inventory.json`, find the atom path, and note the `"tar_id"` (e.g., `bag_00042`).
     * **Step 2**: Add or remove the atom path in `encrypt.txt`.
