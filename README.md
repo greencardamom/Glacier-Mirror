@@ -356,8 +356,14 @@ Glacier supports GPG encryption. It works either at the Atomic level or can be a
 
 **Prerequisites**:
  * Encryption requires a file named `key.txt` to exist in the same directory as the script. To create this file safely:
-   * **Method A (Secure)**: Run this command to type your password without it appearing in your history: `stty -echo; printf 'Passphrase: '; read pw; stty echo; echo; echo "$pw" > key.txt && chmod 600 key.txt`
-   * **Method B (Quick)**: Run this command (Warning: your password will appear in shell history): `echo 'your_passphrase_here' > key.txt && chmod 600 key.txt`
+   * **Method A (Secure)**: Run this command to type your password without it appearing in your history: 
+     ```text
+     `stty -echo; printf 'Passphrase: '; read pw; stty echo; echo; echo "$pw" > key.txt && chmod 600 key.txt`
+     ```
+   * **Method B (Quick)**: Run this command (Warning: your password will appear in shell history): 
+     ```text
+     `echo 'your_passphrase_here' > key.txt && chmod 600 key.txt`
+     ```
    * **Record Passphrase**: Record or remember your passphrase or risk never retrieving your encrypted files. Use a secure passphrase! 
  * *Note: If you are setting up glacier for the first time, run glacier (dry run) once to generate inventory_dryrun.json. You can use this file to find the correct Atom pathnames.*
 
