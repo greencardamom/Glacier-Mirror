@@ -305,7 +305,7 @@ aws s3api list-objects-v2 --bucket greenc-bucket --prefix 2026-backup/ --query '
 ---
 ## 9. Operations
 
-Operation methods. **Order of operation is significant!**
+Operation methods. **Order of `Steps` are significant!**
 
 ### Editing list.txt
 
@@ -321,12 +321,12 @@ Operation methods. **Order of operation is significant!**
 * **Rename a line in `list.txt`**:
   * **Step 1**: Rename the line in list.txt
   * **Step 2**: Run glacier: `glacier --reset-source OLD_PATHNAME --run` where `OLD_PATHNAME` is the original name from `list.txt`
-    * *Note: `OLD_PATHNAME` must match the deleted line. Do not include any ::tags.*
+    * *Note: `OLD_PATHNAME` must match the original line without any ::tags.*
 
 * **Edit ``::ENCRYPT`` tags**:
   * **Step 1**: Add/remove the tag in `list.txt`
   * **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where the `PATHNAME` is the name from `list.txt`
-    * *Note: `PATHNAME` must match the modified line. Do not include any `::tags`.*
+    * *Note: `PATHNAME` must match the modified line without any `::tags`.*
 
 ### Managing Bags
 
