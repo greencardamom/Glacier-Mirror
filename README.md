@@ -309,24 +309,24 @@ Operation methods. **Order of operation is significant!**
 
 ### Editing list.txt
 
-* Add a new line to list.txt: 
-  **Step 1**: Add the new line to list.txt
-  **Step 2**: `glacier --run`
+* **Add a new line to `list.txt`**: 
+  * **Step 1**: Add the new line to `list.txt`
+  * **Step 2**: `glacier --run`
 
-* Delete a line from list.txt: 
-  **Step 1**: Remove the line from list.txt
-  **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where pathname will be deleted from list.txt
+* **Delete a line from `list.txt`**: 
+  * **Step 1**: Remove the line from `list.txt`
+  * **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where pathname will be deleted from list.txt
     *Note: `PATHNAME` must match the deleted line. Do not include any ::tags.*
 
-* Rename a line in list.txt:
-  **Step 1**: Rename the line in list.txt
-  **Step 2**: Run glacier: `glacier --reset-source OLD_PATHNAME --run` where old_pathname is the original name from list.txt
+* **Rename a line in `list.txt`**:
+  * **Step 1**: Rename the line in list.txt
+  * **Step 2**: Run glacier: `glacier --reset-source OLD_PATHNAME --run` where old_pathname is the original name from list.txt
     *Note: `OLD_PATHNAME` must match the deleted line. Do not include any ::tags.*
 
-* Edit ::ENCRYPT tags:
-  **Step 1**: Add/remove the tag in list.txt
-  **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where the pathname is the name from list.txt
-    *Note: `PATHNAME` must match the modified line. Do not include any ::tags.*
+* **Edit ``::ENCRYPT`` tags**:
+  * **Step 1**: Add/remove the tag in `list.txt`
+  * **Step 2**: Run glacier: `glacier --reset-source PATHNAME --run` where the pathname is the name from list.txt
+    *Note: `PATHNAME` must match the modified line. Do not include any `::tags`.*
 
 ### Managing Bags
 
