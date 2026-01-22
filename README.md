@@ -382,8 +382,8 @@ Glacier supports GPG encryption. It works either at the Atomic level or can be a
 
   * **Option 1: Specific Atoms (via encrypt.txt)** *Use this to efficiently re-upload only the specific bag containing the atom.*
 
-    * **Step 1**: Find the bag containing the atom:
-      * Method A: `glacier --find FILENAME` (Look for the bag name in the output).
+    * **Step 1**: Find both the atomic and bag names:
+      * Method A: Search by a filename: `glacier --find FILENAME` (e.g. `glacier --find hello.html`)
       * Method B: Open `inventory.json`, find the atom path, and note the `"tar_id"` (e.g., `bag_00042`).
     * **Step 2**: Add or remove the atom path in `encrypt.txt`.
     * **Step 3**: Run glacier: `glacier --reset-bag BAG_ID --run`
@@ -395,11 +395,19 @@ Glacier supports GPG encryption. It works either at the Atomic level or can be a
       *Note: `PATHNAME` must match the modified line. Do not include any ::tags.*
 
 ### Upload speed
-Uploading TB of data takes a long time, days; it can cause problems on your network. It is recommend to run Glacier at about 50% of your network capacity to keep you and your ISP happy. To determine capacity, Google "broadband speed test", run it and note the upload speed. If it is reported in bits (not bytes) divide by 8. Then divide in half. For example a 350Mb (bits) connection would be comfortable at about 20MB/s (bytes). Thus:
 
-* `--limit 20`
+* `--limit #` will cap your upload speed.
 
-Will limit Glacier to 20MB/s upload speed. 
+Uploading TB of data takes a long time, even days. It can cause problems for your network. It is recommend to run Glacier at about 50% of your network capacity to keep you and your ISP happy. To determine capacity, check your upload speed at a broadband speed test service. If it is reported in bits (not bytes) divide by 8. Then divide in half. Examples:
+
+| Advertised Upload (Mbps) | ~Max Capacity (MB/s) | Recommended `--limit` (50%) |
+| :--- | :--- | :--- |
+| 10 Mbps | 1.25 MB/s | `--limit 1` |
+| 40 Mbps | 5 MB/s | `--limit 2` |
+| 100 Mbps | 12.5 MB/s | `--limit 6` |
+| 300 Mbps | 37.5 MB/s | `--limit 18` |
+| 500 Mbps | 62.5 MB/s | `--limit 30` |
+| 1000 Mbps (Gigabit) | 125 MB/s | `--limit 60` |
 
 ### Repacking
 
