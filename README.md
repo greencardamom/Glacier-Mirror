@@ -16,22 +16,21 @@ Python tool for managing large-scale backups to Amazon S3 Glacier Deep Archive (
 ## 1. Introduction: The Tape Backup Insurance Policy
 
 ### The Problem
-Let's say you have multiple TBs of data stored locally on drives. Perhaps mirrored on multiple drives. It is still not sufficient for catastrophic losses like fire, lightning, theft, filesystem corruption. The LTO tape drive path is very expensive, a hassle to manage and usually overkill for most users, unless you have 100s of TBs. You want an insurance policy where the data can be stored on tape in a datacenter that is cheap, secure and that will have peace of mind "forever". And you want to make occasional incremental backups.
+You have multiple TBs of data stored locally on drives. Perhaps mirrored on multiple drives. It is still not sufficient against catastrophic loss: fire, lightning, theft, magnetic degredation, filesystem corruption, etc.. An LTO tape drive is very expensive, a hassle to manage and usually overkill for most, unless you have 100s of TBs. You want an insurance policy where the data can be stored on tape, in a datacenter that is cheap, secure and that will provide peace of mind "forever". And you want to make occasional incremental backups.
 
 ### The Solution: AWS S3 Glacier Deep Archive
 Enter Glacier Deep Archive, the AWS S3 tape backup service. It is cheap (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system manages AWS to obtain the greatest benefit for the cheapest price. 
 
-The main assumption is you want an insurance policy against catastrophic loss. You will probably never make a full restorations due to the cost. Your have other backups elsewhere, such as on local hard drives. A complete restoration from tape would be a once in a lifetime event. But this system is also designed to modularize the data so restoring smaller pieces is very affordable. Lost a file or directory? It's easy and cheap to restore. A 40GB chunk of data is about $4 to restore. 
+The main assumption is you want an insurance policy against catastrophic loss. You will probably never make a full restorations due to the cost. You have some backups, such as on local hard drives. A complete restoration would be a once in a lifetime event. But this system is also designed to modularize data so restoring smaller pieces is very affordable. Lost a file or directory? It's easy and cheap to restore. A 40GB chunk of data is about $4 to restore. 
 
 ### The Strategy: "Bags"
 
 The basic idea is to containerize the data into uninform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (defineable). Track what they contain in a local manifest. This method reduces how many files are uploaded (API costs), and reduces how many files to download (API costs), when you need to restore some files.
 
-Note: Amazon has a **180-day minimum retention policy**. If you delete a file 30 days after uploading you are still charged for the full 180 days. Thus incremental backups only make financial sense every 6 months or more.
-
 * **Request Fee Savings:** Grouping files into bags reduces the number of API requests.
 * **The 180-Day Solution:** This system is designed to make incremental backups **Once or Twice Per Year** due to AWS retention policy.
-* **Atomic Updates:** If a single file within a bag changes, the entire bag is re-uploaded and the old one deleted. In this system, uploading and deleting files is so cheap as to be nearly free. They only charge much on the download/restore side.
+  * *Note: Amazon has a **180-day minimum retention policy**. If you delete a file 30 days after uploading you are still charged for the full 180 days. Thus incremental backups only make financial sense every 6 months or more.*
+* **Atomic Updates:** If a single file within a bag changes, the entire bag is re-uploaded and the old one deleted. In this system, uploading and deleting files is so cheap as to be nearly free. 
 
 ### Cost Analysis Example (10 TB Dataset)
 Imagine you have **10 TB** of data consisting of **10 million small files** (photos, docs, code).
@@ -43,7 +42,7 @@ Imagine you have **10 TB** of data consisting of **10 million small files** (pho
 | **Upload (PUT) Fees** | **~$500.00** (one time) | **~$0.01** (one time) |
 | **Management** | Nightmare | Simple |
 
-By bagging the data, you save hundreds of dollars in request fees alone.
+By bagging the upload fees are almost eliminated.
 
 *All prices as of January 2026*
 
@@ -59,7 +58,8 @@ Before running the system, ensure the following are installed:
 ### Tools
 * **Python 3.x**
 * **tar:** Standard GNU tar.
-* **sshfs (Optional):** Only required if you are also backing up files from remote servers.
+* **gpg (Optional):** If you want to encrypt files. Standard installed.
+* **sshfs (Optional):** If you are also backing up files from remote servers.
     * `sudo apt install sshfs`
 
 ### Python Libraries
