@@ -369,8 +369,8 @@ Glacier supports GPG encryption. It works either at the Atomic level or can be a
   ```
 
   **Option 2: Encrypt specific Atoms only (via `encrypt.txt`)** Create or edit `encrypt.txt` in the same directory as glacier.py. Add the full local mount path of the Atom.
-    * **Wrong**: greenc@mycomputer:/home/greenc/tools/artifact
-    * **Correct**: /home/greenc/mnt/mycompyter_tools/artifact
+    * **Wrong**: `greenc@mycomputer:/home/greenc/tools/artifact`
+    * **Correct**: `/home/greenc/mnt/mycompyter_tools/artifact`
 
 **Modifying Encryption on Uploaded Data**
 
