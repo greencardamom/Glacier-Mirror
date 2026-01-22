@@ -19,9 +19,7 @@ Python tool for managing large-scale backups to Amazon S3 Glacier Deep Archive (
 You have multiple TBs of data stored locally on drives. Perhaps mirrored on multiple drives. It is still not sufficient against catastrophic loss: fire, lightning, theft, magnetic degredation, filesystem corruption, etc.. An LTO tape drive is very expensive, a hassle to manage and usually overkill for most, unless you have 100s of TBs. You want an insurance policy where the data can be stored on tape, in a datacenter that is cheap, secure and that will provide peace of mind "forever". And you want to make occasional incremental backups.
 
 ### The Solution: AWS S3 Glacier Deep Archive
-Enter Glacier Deep Archive, the AWS S3 tape backup service. It is cheap (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system manages AWS to obtain the greatest benefit for the cheapest price. 
-
-The main assumption is you want an insurance policy against catastrophic loss. You will probably never make a full restorations due to the cost. You have some backups, such as on local hard drives. A complete restoration would be a once in a lifetime event. But this system is also designed to modularize data so restoring smaller pieces is very affordable. Lost a file or directory? It's easy and cheap to restore. A 40GB chunk of data is about $4 to restore. 
+Enter Glacier Deep Archive, the AWS S3 tape backup service. It is cheap (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system aims to obtain the greatest benefit for the cheapest price. 
 
 ### The Strategy: "Bags"
 
@@ -282,7 +280,7 @@ Use this to actually upload files and update the master inventory.json
 
 Operation methods. **Order of `Steps` are significant!**
 
-### Editing list.txt
+### Editing `list.txt`
 
 * **Add a new line to `list.txt`**: 
   * **Step 1**: Add the new line to `list.txt`
@@ -390,7 +388,7 @@ Uploading TB of data takes a long time, even days. It can cause problems for you
 
 ### Repacking
 
-If multiple atoms are assigned to a bag and those atoms shrink over time (due to file deletions), the bag becomes Swiss cheese. Repacking reshuffles these atoms to fill every bag to the target size, reducing your total number of S3 objects.
+If multiple atoms are assigned to a bag and those atoms shrink over time (due to file deletions), the bags become Swiss cheese. Repacking reshuffles these atoms to fill every bag to the target size, reducing your total number of S3 objects.
 
 Repacking has significant downsides. Because bag numbers are reassigned, almost all bags need to be deleted from S3 and reuploaded. If your bags on S3 are less than 6 months old there could be costs associated. There is the time to reupload everything. Typically the minor savings of reducing the number of bag objects is not worth repacking except in a great while. If you only want to repack one atom or a few bags see the section **Consolidate multiple small bags** 
 
@@ -428,7 +426,7 @@ To generate the report:
 
 ### Audit
 
-The `--audit` flag performs an integrity check by comparing your local inventory.json (your "truth" file) against the actual objects currently stored in your S3 bucket.
+The `--audit` flag performs an integrity check by comparing your local `inventory.json` (your "truth" file) against the actual objects currently stored in your S3 bucket.
 
 * `glacier list.txt --audit`
 
@@ -442,13 +440,13 @@ The `--audit` flag performs an integrity check by comparing your local inventory
   * **[NOTE]**: Orphan bags were found. These are safe to delete.
     * **Method A**: `prune.py --delete` 
       * *Delete all orphans on S3*
-      * *The `--check-age` flag will stop bags from being deleted to avoid early deletion fees on bags younger than 180 day
+      * *The `--check-age` flag will stop bags from being deleted to avoid early deletion fees on bags younger than 180 day*
     * **Method B**: `aws s3 rm s3://my-bucket/2026-backup/my_host-book_bag_003.tar` 
       * *Target a specific bag by name*
 
 ### Find
 
-The `--find` flag is your primary tool for data recovery. It performs a reverse lookup to tell you exactly which Bag on S3 contains the file you need.
+The `--find` flag performs a reverse lookup from a filename to its associated bag and atom names needed to do bag restores.
 
 * `glacier list.txt --find FILENAME` (e.g., `glacier list.txt --find "tax_return.pdf"`)
 
