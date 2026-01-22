@@ -126,9 +126,9 @@ aws configure
 
 The architecture of this tool relies on two primary concepts: Atoms and Bags.
 
-* **Atom (stuff being shipped):** An Atom is a directory and its subdirectories the system tracks, sort of like a manifest of goods being sent by a company overseas. If any file within an Atom changes—triggering a change in the Atom's metadata hash—the entire Atom is considered "dirty" and will be repacked into a new bag(s) and reuploaded.
+* **Atom (stuff being shipped):** An Atom is the smallest thing the system tracks. It is a directory name. The atom will have sub-directories and files, they get "bagged" into a tar file named after the atom directory. If any file within an Atom changes—triggering a change in the Atom's metadata hash—the entire Atom is considered "dirty" and will be repacked into new bag(s) and reuploaded.
 
-* **Bag (the shipping container):** A Bag is a .tar file of a uniform size (size defined in the configuration). Bags are the physical units uploaded to S3. Bags can contain 1 atom, multiple atoms, or partial atoms. In the same way a shipping container can be filled with loose goods from 1 company, multiple companies, or split across multiple shipping containers.
+* **Bag (where stuff is stored):** A Bag is a .tar file of uniform size (size defined in the configuration). Bags are the physical units uploaded to S3. Bags can contain 1 atom, multiple atoms, or partial atoms. If an atom contains a single file that is too large to fit into standard size bag, the bag can increase in size. If there is not enough to fill a bag, the bag can be smaller. The standard size bag is a target not a requirement.
 
 ---
 
@@ -136,30 +136,18 @@ The architecture of this tool relies on two primary concepts: Atoms and Bags.
 
 This system works best on a **yearly or twice-yearly cadence**. Here is the lifecycle of your data:
 
-### Year 1: The Initial Upload
-You run the script. It hashes all your local data, packs them into bags, and uploads everything to the folder `2026-backup/`. It creates `inventory.json` a record of the hash of every atom. 
+### Year 1 (2026): The Initial Upload
+You run the script. It hashes all your local data, packs them into bags, and uploads everything to the folder `2026-backup/`. It creates `inventory.json` a record of the hash (size) of every atom. 
 
 ### The Waiting Period (Jan - Dec)
 Your data sits in Deep Archive. You pay the monthly storage fee. 
 
-### Year 2: The Incremental Run
+### Year 2 (2027): The Incremental Run
 It is now January 2027. You run the script again. It re-scans your local drive and compares it to the previous `inventory.json` and updates it.
-
-**Scenario A: Data Unchanged (95% of your files)**
-* The script sees the hash matches ie. the file is unchanged.
-* **Action:** Skips upload entirely.
-* **Cost:** $0.
-* **Result:** The inventory.json points to the existing file in `2026-backup/`.
-
-**Scenario B: Data Changed (5% of your files)**
-* The script sees the hash has changed (or new files added)
-* **Action:** Re-packs just those specific atoms into a NEW bag and uploads it to `2027-backup/`.
-* **Cost:** Small upload fee for just the changes.
-* **Result:** The inventory.json is updated to point to the new file in `2027-backup/`.
 
 ### The Cleanup (Pruning)
 After the Year 2 run, you have a mix of 2026 and 2027 files in your inventory.json - However, the *old versions* of the changed files are still sitting in `2026-backup/`, costing you money.
-* You run `prune.py`.
+* You run `prune.py --delete`.
 * It detects that some of the old 2026 bags are no longer referenced by inventory.json
 * It deletes them from S3.
 * **No Penalty:** Because they sat there for >180 days, deleting them is free.
@@ -209,6 +197,7 @@ price_req_bulk_1k = 0.025
 * **`[pricing]`:** Prices need to be filled in manually. They are not required, but useful for generating reports. Prices haved remained generally stable. They might change by locale.
 
 ### `list.txt` 
+
 This file defines what locations ("items") are backed up. 
 
 **Format:** Items in `list.txt` can be either a local directory name or a remote directory name. 
