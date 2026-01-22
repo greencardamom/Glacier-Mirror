@@ -342,26 +342,28 @@ Operation methods. **Order of `Steps` are significant!**
   * **Step 1**: Run glacier: `glacier --reset-bag BAG_ID_1 BAG_ID_2 ... --run`
     * *Example*: `glacier --reset-bag bag_0001 bag_0002 bag_0003 --run`
     * *What happens*: *The script deletes the three old bags. During the re-upload phase, it will group all that data together and pack it into as few new bags as possible.*
+    * See `--repack` to do this for the entire inventory of bags, however it will delete everything from Amazon S3 as if starting over new.
 
 * **Note on Bag IDs**:
-  * *When you reset a bag, the old ID (e.g. bag_0001) is permanently retired. The data will reappear in the next available highest bag number.*
+  * *When you reset a bag, the old ID (e.g. bag_0001) is permanently retired. The data will reappear in the next available highest bag number. The only way to recover unused IDs is `--repack`*
 
 ---
 
 ## 9. Advanced Features:
 
 ### Encryption
-Glacier supports GPG encryption. It works either at the Atomic level or for a whole line in list.txt.
+Glacier supports GPG encryption. It works either at the Atomic level or can be applied to a single line in `list.txt`.
 
 **Prerequisites**:
  * Encryption requires a file named `key.txt` to exist in the same directory as the script. To create this file safely:
- * **Method A (Secure)**: Run this command to type your password without it appearing in your history: `stty -echo; printf 'Passphrase: '; read pw; stty echo; echo; echo "$pw" > key.txt && chmod 600 key.txt`
- * **Method B (Quick)**: Run this command (Warning: your password will appear in shell history): `echo 'your_passphrase_here' > key.txt && chmod 600 key.txt`
- * **Record Passphrase**: Record or remember your passphrase or risk never retrieving your encrypted files. Use a secure passphrase! 
- * If you are setting up glacier for the first time, run glacier (dry run) once to generate inventory_dryrun.json. You can use this file to find the correct Atom pathnames.
+   * **Method A (Secure)**: Run this command to type your password without it appearing in your history: `stty -echo; printf 'Passphrase: '; read pw; stty echo; echo; echo "$pw" > key.txt && chmod 600 key.txt`
+   * **Method B (Quick)**: Run this command (Warning: your password will appear in shell history): `echo 'your_passphrase_here' > key.txt && chmod 600 key.txt`
+   * **Record Passphrase**: Record or remember your passphrase or risk never retrieving your encrypted files. Use a secure passphrase! 
+ * *Note: If you are setting up glacier for the first time, run glacier (dry run) once to generate inventory_dryrun.json. You can use this file to find the correct Atom pathnames.*
 
 **Setting up Encryption**
-  **Option 1: Encrypt an entire source (line in list.txt)** Append the tag ::ENCRYPT to the line.
+  **Option 1: Encrypt an entire source (line in list.txt)** 
+  Append the tag ::ENCRYPT to the line.
 ```text
 /home/greenc/cache/Backup ::IMMUTABLE ::ENCRYPT
 ```
