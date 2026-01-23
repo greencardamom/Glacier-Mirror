@@ -121,7 +121,7 @@ def get_metadata_hash(directory, recursive=True, file_list=None):
     pbar.close()
     return hasher.hexdigest(), total_size
 
-def generate_real_manifest(bag_name, atom_definitions, is_live):
+def generate_real_manifest(bag_name, leaf_definitions, is_live):
     """Generates manifest with visual progress to monitor SSHFS performance."""
     timestamp = datetime.now().strftime('%Y%m%d')
     base_name = bag_name.replace(".tar", "")
@@ -141,10 +141,11 @@ def generate_real_manifest(bag_name, atom_definitions, is_live):
         
         with open(manifest_path, "w") as f:
             f.write(f"# Manifest for {bag_name}\n")
-            for atom in atom_definitions:
-                path = atom['path']
-                if atom.get('is_cluster_root', False):
-                    for filename in atom.get('files', []):
+            for leaf in leaf_definitions:
+                path = leaf['path']
+                # Updated flag: is_branch_root instead of is_cluster_root
+                if leaf.get('is_branch_root', False):
+                    for filename in leaf.get('files', []):
                         f.write(f"{os.path.join(path, filename)}\n")
                         pbar.update(1)
                 else:
@@ -236,8 +237,8 @@ def generate_summary(inventory, run_stats, is_live):
     price_gb = float(config['pricing'].get('price_per_gb_month', 0.00099))
     min_days = int(config['pricing'].get('min_retention_days', 180))
 
-    for source, data in inventory.get("molecular_sources", {}).items():
-        atoms = data.get("atomic_units", {})
+    for branch, data in inventory.get("branches", {}).items():
+        leaves = data.get("leaves", {})
         source_size = sum(a.get("size_bytes", 0) for a in atoms.values())
         unique_bags = set(a.get("tar_id") for a in atoms.values() if a.get("tar_id"))
         num_bags = len(unique_bags)
@@ -287,7 +288,7 @@ def generate_summary(inventory, run_stats, is_live):
 
 # --- PROCESSING ---
 
-def process_bag(bag_num, atom_list, source_root, short_name, bag_size_bytes, is_live, molecule_atoms, hostname, source_stats, upload_limit_mb):
+def process_bag(bag_num, leaf_list, branch_root, short_name, bag_size_bytes, is_live, branch_leaves, hostname, branch_stats, upload_limit_mb):
     safe_prefix = short_name.replace(" ", "_")
     tar_name = f"{hostname}_{safe_prefix}_bag_{bag_num:05d}.tar"
     tar_path = os.path.join(STAGING_DIR, tar_name)
@@ -390,19 +391,19 @@ def process_bag(bag_num, atom_list, source_root, short_name, bag_size_bytes, is_
     except Exception as e:
         print(f"    [FATAL] {e}"); sys.exit(1)
 
-def process_source(line_raw, inventory, run_stats, is_live, upload_limit_mb, is_repack=False):
+def process_branch(branch_line, inventory, run_stats, is_live, upload_limit_mb, is_repack=False):
 
     """Handles parsing types (MUTABLE, IMMUTABLE) and processing."""
-    if " ::" in line_raw:
-        path_part, type_part = line_raw.split(" ::", 1)
+    if " ::" in branch_line:
+        path_part, type_part = branch_line.split(" ::", 1)
         source_path = path_part.strip()
         designator = type_part.strip().upper()
     else:
-        source_path = line_raw.strip()
+        source_path = branch_line.strip()
         designator = "MUTABLE" # Default
 
-    run_stats[line_raw] = {'up_count': 0, 'up_bytes': 0, 'skip_count': 0, 'skip_bytes': 0}
-    source_stats = run_stats[line_raw]
+    run_stats[branch_line] = {'up_count': 0, 'up_bytes': 0, 'skip_count': 0, 'skip_bytes': 0}
+    source_stats = run_stats[branch_line]
 
     mount_point_to_cleanup = None
     try:
@@ -422,9 +423,9 @@ def process_source(line_raw, inventory, run_stats, is_live, upload_limit_mb, is_
         print(f"Processing [{designator}]: {short_name}")
         print(f"------------------------------------------------")
 
-        if line_raw not in inventory["molecular_sources"]:
-            inventory["molecular_sources"][line_raw] = {"atomic_units": {}}
-        molecule_atoms = inventory["molecular_sources"][line_raw]["atomic_units"]
+        if branch_line not in inventory["branches"]:
+            inventory["branches"][branch_line] = {"leaves": {}}
+        branch_leaves = inventory["branches"][branch_line]["leaves"]
 
 # 2. IDENTIFY ATOMS BASED ON DESIGNATOR
         found_items = [] 
@@ -452,7 +453,7 @@ def process_source(line_raw, inventory, run_stats, is_live, upload_limit_mb, is_
                     "key": cluster_key, "path": scan_path, "is_cluster_root": True, "files": loose_files
                 })
         else:
-            print(f"[ERROR] Unknown tag '::{designator}' on line: {line_raw}")
+            print(f"[ERROR] Unknown tag '::{designator}' on line: {branch_line}")
             return
 
         # 3. SCAN METADATA & UPDATE INVENTORY
@@ -667,8 +668,8 @@ def generate_full_report(inventory, config):
     # Inventory Metrics
     total_bytes = 0
     total_bags = set()
-    for source, data in inventory.get("molecular_sources", {}).items():
-        for atom, details in data.get("atomic_units", {}).items():
+    for branch, data in inventory.get("branches", {}).items():
+        for leaf, details in data.get("leaves", {}).items():
             total_bytes += details.get('size_bytes', 0)
             if details.get('archive_key'):
                 total_bags.add(details['archive_key'])
@@ -738,9 +739,10 @@ def audit_s3(inventory):
     print(f"\n--- S3 Integrity Audit ---")
     
     # 1. Get every bag mentioned in the inventory
+    # Updated keys: 'branches' instead of 'molecular_sources', 'leaves' instead of 'atomic_units'
     expected_bags = {}
-    for source, data in inventory.get("molecular_sources", {}).items():
-        for atom, details in data.get("atomic_units", {}).items():
+    for branch, data in inventory.get("branches", {}).items():
+        for leaf, details in data.get("leaves", {}).items():
             key = details.get('archive_key')
             size = details.get('size_bytes', 0)
             if key:
@@ -762,7 +764,7 @@ def audit_s3(inventory):
         if bag_key not in actual_s3_files:
             missing.append(bag_key)
         # Note: Size check is approximate because TAR overhead exists on S3
-        # but the S3 file should NEVER be smaller than the sum of its atoms.
+        # but the S3 file should NEVER be smaller than the sum of its leaves.
 
     if not missing:
         print(f"  [OK] All {len(expected_bags)} expected bags are present on S3.")
@@ -832,7 +834,7 @@ def main():
         lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
 
     for line in lines:
-        process_source(line, inventory, run_stats, args.run, args.limit, args.repack)
+        process_branch(line, inventory, run_stats, args.run, args.limit, args.repack)
 
     generate_summary(inventory, run_stats, args.run)
 
