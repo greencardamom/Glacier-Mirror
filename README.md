@@ -2,40 +2,40 @@
           G L A C I E R   B A C K U P
     =========================================
 
-# Glacier Backup System
+# Aukive Glacier Backup
 ![Version](https://img.shields.io/badge/Version-1.0-blue)
 ![Storage](https://img.shields.io/badge/Storage-S3_Deep_Archive-informational)
 
 **Created:** January 2026
 **Author:** Greenc
 
-Python tool for managing large-scale backups to Amazon S3 Glacier Deep Archive (tape backup). Designed to maximum cost savings and run automatically and incrementaly. 
+A Python tool for managing large-scale backups to Amazon S3 Glacier Deep Archive (tape backup). Maximize cost savings and run automatically. Maintain a continuous mirror of local data to tape backup for cheap.
 
 ---
 
 ## 1. Introduction: The Tape Backup Insurance Policy
 
 ### The Problem
-You have multiple TBs of data stored locally on drives. Perhaps mirrored on multiple drives. It is still not sufficient against catastrophic loss: fire, lightning, theft, magnetic degredation, filesystem corruption, etc.. An LTO tape drive is very expensive, a hassle to manage and usually overkill for most, unless you have 100s of TBs. You want an insurance policy where the data can be stored on tape, in a datacenter that is cheap, secure and that will provide peace of mind "forever". And you want to make occasional incremental backups.
+You have multiple TBs of data stored locally on drives. Perhaps mirrored across multiple drives. But it is still not secure against catastrophic loss: fire, lightning, theft, magnetic degredation, filesystem corruption, etc.. An LTO tape drive is very expensive, hassle to manage and usually overkill for most uses. You want a solution that will continuously mirror the data to tape, at a tier-1 datacenter that is cheap, secure and that will provide peace of mind "forever". 
 
 ### The Solution: AWS S3 Glacier Deep Archive
 Enter Glacier Deep Archive, the AWS S3 tape backup service. It is cheap (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system aims to obtain the greatest benefit for the cheapest price. 
 
 ### The Strategy: "Leaf Bags"
 
-The basic idea is to containerize the data into uninform size 'shipping containers' (.tar files) called "Leaf Bags" of about 40GB each (defineable). Track what they contain in a local manifest. This method reduces how many files are uploaded (API costs), and reduces how many files to download (API costs), when you need to restore some files.
+The basic idea is to containerize the data into uninform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (defineable). Track what they contain in a local manifest. This method reduces how many files are uploaded (API costs), and reduces how many files to download (API costs) when you need to restore some files.
 
-* **Request Fee Savings:** Grouping files into leaf bags reduces the number of API requests.
+* **Request Fee Savings:** Grouping files into bags reduces the number of API requests.
 * **The 180-Day Solution:** This system is designed to make incremental backups **Once or Twice Per Year** due to AWS retention policy.
-  * *Note: Amazon has a **180-day minimum retention policy**. If you delete a file 30 days after uploading you are still charged for the full 180 days. Thus incremental backups only make financial sense every 6 months or more.*
-* **Leaf-Level Updates:** If a single file within a leaf bag changes, the entire leaf bag is re-uploaded and the old one deleted. In this system, uploading and deleting files is so cheap as to be nearly free. 
+  * *Note: Amazon has a **180-day minimum retention policy**. If you delete a file 30 days after uploading you are still charged for the full 180 days. Thus mirroring only makes financial sense every 6 months or more.*
+* **Leaf-Level Updates:** If a single file within a bag changes, the entire bag is re-uploaded and the old one deleted. In this system, uploading and deleting files is so cheap as to be nearly free. 
 
 ### Cost Analysis Example (10 TB Dataset)
 Imagine you have **10 TB** of data consisting of **10 million small files** (photos, docs, code).
 
-| Metric | Raw Upload (Bad Strategy) | Glacier System (Leaf Bag Strategy) |
+| Metric | Raw Upload (Bad Strategy) | Glacier System (Bag Strategy) |
 | :--- | :--- | :--- |
-| **Object Count** | 10,000,000 files | ~250 Leaf Bags (40GB each) |
+| **Object Count** | 10,000,000 files | ~250 Bags (40GB each) |
 | **Storage Cost** | $10 / month | $10 / month |
 | **Upload (PUT) Fees** | **~$500.00** (one time) | **~$0.01** (one time) |
 | **Management** | Nightmare | Simple |
@@ -122,20 +122,20 @@ aws configure
 
 ## 4. Logistical Concepts
 
-The architecture of this tool relies on two primary concepts: Leaves and Leaf Bags.
+The architecture of this tool relies on two primary concepts: Leaves and Bags.
 
-* **Leaf (stuff being shipped):** A Leaf is the smallest thing the system tracks. It is a directory name. The leaf will have sub-directories and files that get "bagged" into a tar file named after the leaf directory. If any file within a Leaf changes—triggering a change in the Leaf's metadata hash—the entire Leaf is considered "dirty" and will be repacked into new leaf bag(s) and reuploaded.
+* **Leaf (stuff being shipped):** A Leaf is the smallest thing the system tracks. A leaf is literally a directory name. The leaf will have sub-directories and files that get "bagged" into a tar file named after the leaf directory. If any file within a Leaf changes—triggering a change in the Leaf's metadata hash—the entire Leaf is considered "dirty" and will be repacked into new leaf bag(s) and reuploaded.
 
-* **Leaf Bag (where stuff is stored):** A Leaf Bag is a .tar file of uniform size (size defined in the configuration). Leaf Bags are the physical units uploaded to S3. Leaf Bags can contain 1 leaf, multiple leaves, or partial leaves. If a leaf contains a single file that is too large to fit into standard size leaf bag, the leaf bag can increase in size. If there is not enough to fill a leaf bag, the leaf bag can be smaller. The standard size leaf bag is a target not a requirement.
+* **Bag (where stuff is stored):** A Bag is a .tar file of uniform size (size defined in the configuration). Bags are the physical units uploaded to S3. Bags can contain 1 leaf, multiple leaves, or partial leaves - the system will determine. If a leaf contains a single file too large to fit into a standard size bag, the bag can increase in size. If there is not enough to fill a bag, the bag can be smaller. The standard size leaf bag is a target, not a requirement.
 
 ---
 
-## 4. The Yearly Lifecycle: How Incremental Works
+## 4. The Yearly Lifecycle: How Mirroring Works
 
 This system works best on a **yearly or twice-yearly cadence**. Here is the lifecycle of your data:
 
 ### Year 1 (2026): The Initial Upload
-You run the script. It hashes all your local data, packs them into leaf bags, and uploads everything to the folder `2026-backup/`. It creates `inventory.json` a record of the hash (size) of every leaf. 
+You run the script. It hashes all your local data, packs them into bags, and uploads everything to the folder `2026-backup/`. It creates `inventory.json` a record of the hash (size) of every leaf. 
 
 ### The Waiting Period (Jan - Dec)
 Your data sits in Deep Archive. You pay the monthly storage fee. 
@@ -146,7 +146,7 @@ It is now January 2027. You run the script again. It re-scans your local drive a
 ### The Cleanup (Pruning)
 After the Year 2 run, you have a mix of 2026 and 2027 files in your inventory.json - However, the *old versions* of the changed files are still sitting in `2026-backup/`, costing you money.
 * You run `glacier.py --prune --run`.
-* It detects that some of the old 2026 leaf bags are no longer referenced by inventory.json
+* It detects that some of the old 2026 bags are no longer referenced by inventory.json
 * It deletes them from S3.
 * **No Penalty:** Because they sat there for >180 days, deleting them is free.
 
@@ -196,7 +196,7 @@ price_req_bulk_1k = 0.025
 
 ### `tree.txt` 
 
-This file defines what locations ("branches") are backed up. 
+This file defines what locations ("branches") are backed up. Branches are 1-level up from a leaf. They are also nothing more than a directory name, but one branch can have multiple leaves associated with it.
 
 **Format:** Branches in `tree.txt` can be either a local directory name or a remote directory name. 
 
@@ -209,20 +209,20 @@ greenc@fox:/home/greenc/Books ::MUTABLE
 
 Each line has two elements: *location* and *::TAG* .. where tag can be:
 
-* **`::IMMUTABLE (Private Container)`:** Use this for large, standalone directories. The script grants this branch total isolation. It will never share a leaf bag with another Leaf. If the branch is smaller than the leaf bag size (40GB), the leaf bag is shipped partially empty to ensure sovereignty.
-* **`::MUTABLE (Shared Container)`:** Use this for parent directories containing many smaller folders. The script breaks these down into individual Leaves and packs them efficiently into shared 40GB leaf bags. 
+* **`::IMMUTABLE (Private Container)`:** Use this for large, standalone directories. The script grants this branch total isolation. It is in effect a single leaf. It will never share a bag with another leaf. If the branch is smaller than the bag size (40GB), the bag is shipped partially empty to ensure sovereignty.
+* **`::MUTABLE (Shared Container)`:** Use this for parent directories containing many smaller folders. The script breaks these down into individual leaves and packs them efficiently into shared 40GB leaf bags. 
 
 **Examples**:
 
 * **`::IMMUTABLE`:** You have a specific software project MyApp_v1/ that contains src/, bin/, lib/, and docs/. Items in this directly are useless apart, you likely would always restore the entire directory.
-* **`::MUTABLE`:** You have a Books/ folder with 500 author subdirectories. If you accidentally delete only your Dickens collection, you only have to restore the "Charles Dickens" leaf bag (2GB). You do not have to pay to retrieve an entire 1TB /Books leaf bag just to get one author back.
-* **`::MUTABLE`:** You have a Repos/ folder with 50 code repository subdirectories that have a lot of data files (1TB total). If you accidentally delete only 1 repo, you only have to restore the leaf bag that contains that repo. You do not have to pay to retrieve the entire 1TB /Repo leaf bag had it been set IMMUTABLE. 
+* **`::MUTABLE`:** You have a Books/ folder with 500 author subdirectories. If you accidentally delete only your Dickens collection, you only have to restore the "Charles Dickens" bag (2GB). You do not have to pay to retrieve an entire 1TB /Books bag just to get one author back.
+* **`::MUTABLE`:** You have a Repos/ folder with 50 code repository subdirectories that have a lot of data files (1TB total). If you accidentally delete only 1 repo, you only have to restore the bag that contains that repo. You do not have to pay to retrieve the entire 1TB /Repo bag had it been set IMMUTABLE. 
 * **`::MUTABLE`:** Your Desktop/ or My Documents/ folder. You have folders for Taxes, Receipts, Letters, but you also have 50 random PDF files sitting directly in the folder. This is the messy folder, you are not sure what you will need to restore in the future.
 
-The location can be a local directory or a remote directory (see example above). If remote it will connect via sshfs. It assumes you have passwordless ssh configured.
+The location can be a local directory or a remote directory (see example above). If remote it will connect via sshfs and rsync. It assumes you have passwordless ssh configured.
 
 ### `exclude.txt`
-This is an exclude file used by tar. If you want to exclude directories or files within a Leaf directory, use this. The exclude.txt file should be kept in the same location as glacier.py
+This is an exclude file used by tar. If you want to exclude directories or files deep within a Leaf directory, use this. The exclude.txt file should be kept in the same location as glacier.py
 
 **Example exclude.txt:**
 ```text
@@ -237,18 +237,18 @@ This is automatically created and tracks the state of every leaf. Deletion of th
 
 * **Recommendation:** If you lose this file by accident, delete all prior files on S3 and start over with a fresh upload to prevent massive duplication.
 * **`last_metadata_hash`:** Used to detect changes.
-* **`tar_id`:** The leaf bag name (e.g., `bag_001`).
+* **`tar_id`:** The bag name (e.g., `bag_001`).
 * **`archive_key`:** The exact S3 path where this file lives (e.g., `2026-backup/...`).
 
 ### `manifests/*.txt` (File-Level Indexes)
-These files provide a searchable, recursive list of every single file inside every leaf bag. While tree.txt tracks top-level branches to archive, and `inventory.json` tracks "Leaves", the manifests track the specific files *inside* those leaf folders.
+These files provide a searchable, recursive list of every single file inside every bag. While tree.txt tracks top-level branches to archive, and `inventory.json` tracks "Leaves", the manifests track the specific files *inside* those leaf folders.
 
 * **Purpose:** Allows you to find a specific file (e.g., "Where is `tax_return_2024.pdf`?") without having to pay to restore and download 40GB archives just to look inside them.
 * **Format:** Plain text files generated via the `find` command.
 * **Location (Local):** Stored in your configured `manifest_dir`.
 * **Location (Remote):** Uploaded to `s3://[bucket]/[year]-backup/manifests/`.
 * **Storage Class:** **S3 Standard (Hot)**.
-    * Unlike the heavy `.tar` leaf bags which are frozen in Glacier Deep Archive, the manifests are kept in Standard storage.
+    * Unlike the heavy `.tar` bags which are frozen in Glacier Deep Archive, the manifests are kept in Standard storage.
     * **Benefit:** You can instantly download the entire folder of text files and `grep` them to locate data in seconds, effectively for free.
 
 ---
@@ -566,11 +566,40 @@ aws s3 cp s3://greenc-bucket/2026-backup/rabbit_host-agros_bag_003.tar /media/gr
 aws s3 cp s3://greenc-bucket/2026-backup/ /media/greenc/NewDrive/Restore/ --recursive
 ```
 
-### Step 5: Extract (Sparse Mode)
+### Step 5: Extract files
 **IMPORTANT:** Use the `-S` flag to handle sparse files efficiently. This is particularly critical for VM images.
 ```bash
 tar -Sxvf rabbit_host-agros_bag_003.tar -C /home/greenc/Backup/VMs/
 ```
+
+#### Workflow 1: Encryption Only
+*Used when the `ENCRYPT` tag is present but `COMPRESS` is absent.*
+
+| Step | Source File | Program | Output File / Result |
+| :--- | :--- | :--- | :--- |
+| 1. Unbag | `bag_XXXXX.tar` | `tar -xf` | `leaf.gpg` |
+| 2. Decrypt | `leaf.gpg` | `gpg -d` | `leaf.tar` |
+| 3. Extract | `leaf.tar` | `tar -xf` | **Original Directory & Files** |
+
+#### Workflow 2: Encryption + Compression
+*Used when both `ENCRYPT` and `COMPRESS` tags are present.*
+
+| Step | Source File | Program | Output File / Result |
+| :--- | :--- | :--- | :--- |
+| 1. Unbag | `bag_XXXXX.tar` | `tar -xf` | `leaf.gz.gpg` |
+| 2. Decrypt | `leaf.gz.gpg` | `gpg -d` | `leaf.tar.gz` |
+| 3. Decompress | `leaf.tar.gz` | `gunzip` | `leaf.tar` |
+| 4. Extract | `leaf.tar` | `tar -xf` | **Original Directory & Files** |
+
+#### Workflow 3: Compression Only
+*Used when only the `COMPRESS` tag is present.*
+
+| Step | Source File | Program | Output File / Result |
+| :--- | :--- | :--- | :--- |
+| 1. Unbag | `bag_XXXXX.tar` | `tar -xf` | `leaf.tar.gz` |
+| 2. Decompress | `leaf.tar.gz` | `gunzip` | `leaf.tar` |
+| 3. Extract | `leaf.tar` | `tar -xf` | **Original Directory & Files** |
+
 
 ### Purge your S3 account
 To delete everything on your S3 Glacier tape backup
