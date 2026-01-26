@@ -9,7 +9,7 @@
 **Created:** January 2026  
 **Author:** Greenc
 
-A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive (tape backup service). Maximize cost savings and run automatically. Maintain a continuous mirror of local data for cheaper than buying a tape drive.
+A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive (tape backup service). Maximize cost savings and run automatically. Maintain a continuous mirror of local data. Can be cheaper than buying a tape drive and definitely easier.
 
 ## Table of Contents
 1. [Introduction](#1-introduction-the-tape-backup-insurance-policy)
@@ -67,6 +67,7 @@ The bags are uploaded to Glacier. Every 180 days via cron the local files are ch
 * **Vendor Neutral**: Program is a single Python script. Stores data in standard GNU Tar and GPG formats, ensuring files can always be recovered without this software.
 * **Total Recovery**: Keeps a copy of all programs and metadata on S3 so entire system can be recreated from scratch on a new machine.
 * **Intelligent Design**: Designed and written in collaboration with AI and a professional programmer.
+* **Dry Run mode**: Program prints exactly what it would do but performs zero network actions or inventory writes. Default.
 
 ---
 
@@ -338,7 +339,7 @@ Operation features and methods
 * **Add a new branch to `tree.cfg`**: 
   * **Step 1**: Edit `tree.cfg` and add the line.
   * **Step 2**: Run `glacier --mirror-branch /path/to/branch --run`
-    * (The script will detect the new line and upload it.) *
+    * *(The script will detect the new line and upload it.)*
 
 * **Delete a branch from `tree.cfg`**: 
   * **Step 1**: Run `glacier --delete-branch /path/to/branch --run`
@@ -355,10 +356,10 @@ Operation features and methods
   * *Note: Changing these settings changes the fundamental structure of the archive. You must wipe the old version and re-upload.*
   * **Step 1**: Edit the tag in `tree.cfg`
   * **Step 2**: Run `glacier --mirror-branch /path/to/branch --force-reset --run`
-    * (The `--force-reset` flag tells the script to delete the existing S3 data for this branch and immediately re-upload it with the new settings.)*
+    * *(The `--force-reset` flag tells the script to delete the existing S3 data for this branch and immediately re-upload it with the new settings.)*
 
 * **Note on Leaf Bag IDs**:
-  * * Bag IDs (bag_0001) are immutable, once used they are not used again. Thus if the system needs to delete an old bag and upload a new it will have a new ID. It is possible to globally redo leaf bag IDs to compact and reuse retired numbers, see `--repack`*
+  * Bag IDs (bag_0001) are immutable, once used they are not used again. Thus if the system needs to delete an old bag and upload a new it will have a new ID. It is possible to globally redo leaf bag IDs to compact and reuse retired numbers, see `--repack`
 
 ### Reporting & Inspection
 
@@ -432,9 +433,9 @@ Options for optimizing storage, managing bandwidth, and system cleanup.
       *(If orphans are found: `--prune --run`)*
 
 * `--prune`
-  **Description**: It scans the S3 bucket for any bag files that exist but are not present in your `local inventory.json`. It then deletes the orphans.
-  **Why use it**: Prune would typically be run right after `--mirror-tree --cron` to ensure your S3 bucket only has the needed files. It is also run if `--audit` finds orphans.
-  **Usage**: Run `./glacier.py --prune --run`
+  * **Description**: It scans the S3 bucket for any bag files that exist but are not present in your `local inventory.json`. It then deletes the orphans.
+  * **Why use it**: Prune would typically be run right after `--mirror-tree --cron` to ensure your S3 bucket only has the needed files. It is also run if `--audit` finds orphans.
+  * **Usage**: Run `./glacier.py --prune --run`
 
 **System Configuration**
 
