@@ -555,8 +555,8 @@ The restore commands are state-aware. You run the same command to initiate a tha
 **Restore Options**
  * **`--to PATH`**: Required. The destination directory for recovered files.
  * **`--tier [Standard|Bulk]`**:
-    * **Standard (Default)**: Faster (12 hours).
-    * **Bulk**: Cheaper by about 20%, slower (48 hours).
+    * **Standard (Default)**: Faster (12 hours). 
+    * **Bulk**: Cheaper by about 8 times than Standard, but slower (48 hours).
 
 ### Bootstrap
 Restoration of Glacier Mirror and all data file on a new machine
@@ -592,6 +592,10 @@ chmod +x glacier.py
 
 * **Step 5**: Data Restoration
   * See **Recovery** section
+
+### Snowball
+
+Amazon has a service called "Snowball" where they send you a computer with your data on it, then you copy it off and send the computer back. The break-even point for this service is around 6TB (as of 2026). If you need to download this amount or more look into this service as an option.
 
 
 ## 11. Appendix: Manual File Extraction
