@@ -595,7 +595,7 @@ chmod +x glacier.py
 
 ### Snowball
 
-Amazon has a service called "Snowball" where they send you a computer with your data on it, then you copy it off and send the computer back. The break-even point for this service is around 6TB (as of 2026). If you need to download this amount or more look into this service as an option.
+Amazon has a service called "Snowball" where they send you a computer with your data on a hard drive. You copy it and send the computer back. The break-even point for this service is around 6TB (as of 2026). If you need to download a large amount and don't want to saturate your network Snowball can be cheaper and faster.
 
 
 ## 11. Appendix: Manual File Extraction
