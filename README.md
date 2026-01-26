@@ -9,7 +9,7 @@
 **Created:** January 2026  
 **Author:** Greenc
 
-A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive (tape backup service). Maximize cost savings and run automatically. Maintain a continuous mirror of local data. Can be cheaper than buying a tape drive and definitely easier.
+A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive (tape backup service). Maximize cost savings. Create a mirror of local data on tape. Can be cheaper than buying a tape drive and definitely easier.
 
 ## Table of Contents
 1. [Introduction](#1-introduction-the-tape-backup-insurance-policy)
@@ -36,7 +36,7 @@ Enter "Glacier" Deep Archive, the AWS S3 tape backup service. It is cheap to upl
 
 ### The Strategy: "Leaf Bags"
 
-In theory one could make a single giant tar file. But if you wanted to restore a single directory you would to download the entire tar ball which is very expensive. Or you could upload every file individually, but due to per-file API costs this gets expensive. There is a "sweet spot" where a few thousand files costs literally pennies for upload. The strategy then is to containerize the data into uniform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (you choose the size). Track what the bags contain in a local database (JSON file). This method reduces how many files are uploaded (API costs), and reduces how many files are needed to download (API costs) when you need to restore some files.
+In theory one could make a single giant tar file. But if you wanted to restore a single directory you would need to download the entire tar ball which is very expensive. Or you could upload every file individually, but due to per-file API costs this gets expensive. There is a sweet spot where a few thousand files costs literally pennies for upload. The strategy then is to containerize the data into uniform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (you choose the size). Then track what the bags contain in a local database (JSON file). This method reduces how many files are uploaded (API costs), and reduces how many files are needed to download (API costs) when you need to restore some files.
 
 In this system you define what is uploaded according to "branches" and "leaves" - this creates a list of items which are put into bags, the physical tar file.
 
