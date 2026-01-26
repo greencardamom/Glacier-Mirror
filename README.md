@@ -1,52 +1,76 @@
     =========================================
-          G L A C I E R   B A C K U P
+          G L A C I E R   M I R R O R
     =========================================
 
-# Aukive Glacier Backup
+# Glacier Mirror
 ![Version](https://img.shields.io/badge/Version-1.0-blue)
 ![Storage](https://img.shields.io/badge/Storage-S3_Deep_Archive-informational)
 
-**Created:** January 2026
+**Created:** January 2026  
 **Author:** Greenc
 
-A Python tool for managing large-scale backups to Amazon S3 Glacier Deep Archive (tape backup). Maximize cost savings and run automatically. Maintain a continuous mirror of local data to tape backup for cheap.
+A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive (tape backup service). Maximize cost savings and run automatically. Maintain a continuous mirror of local data for cheaper than buying a tape drive.
+
+## Table of Contents
+1. [Introduction](#1-introduction-the-tape-backup-insurance-policy)
+2. [Features](#2-features)
+3. [Prerequisites & Dependencies](#3-prerequisites--dependencies)
+4. [AWS Configuration Guide](#4-aws-configuration-guide)
+5. [Configuration Files](#5-configuration-files)
+6. [Quick Start](#6-quick-start)
+7. [Operations](#7-operations)
+8. [Automation](#8-automation)
+9. [Advanced Features](#9-advanced-features)
+10. [Recovery](#10-recovery)
+11. [Appendix: Manual File Extraction](#11-appendix-manual-file-extraction)
 
 ---
 
 ## 1. Introduction: The Tape Backup Insurance Policy
 
 ### The Problem
-You have multiple TBs of data stored locally on drives. Perhaps mirrored across multiple drives. But it is still not secure against catastrophic loss: fire, lightning, theft, magnetic degredation, filesystem corruption, etc.. An LTO tape drive is very expensive, hassle to manage and usually overkill for most uses. You want a solution that will continuously mirror the data to tape, at a tier-1 datacenter that is cheap, secure and that will provide peace of mind "forever". 
+You have multiple TBs of data stored locally on drives. Perhaps mirrored across multiple drives. But it is still not secure against catastrophic loss: fire, lightning, theft, magnetic degradation, filesystem corruption, etc. Buying an LTO tape drive is very expensive, a hassle to manage, and overkill for most cases. You want a solution that will continuously mirror the data to tape, at a tier-1 datacenter that is cheap, secure and that will provide peace of mind "forever".
 
-### The Solution: AWS S3 Glacier Deep Archive
-Enter Glacier Deep Archive, the AWS S3 tape backup service. It is cheap (approx. **$1.00 per TB/month**). However, **restoring** is expensive, and uploading millions of small files incurs API fees. This system aims to obtain the greatest benefit for the cheapest price. 
+### The Solution: AWS S3 Deep Archive
+Enter "Glacier" Deep Archive, the AWS S3 tape backup service. It is cheap to upload and store (approx. **$1.00 per TB/month**). However, **restoring** is expensive for big things, and cheap for small things. This system aims to obtain the greatest benefit for the cheapest price.
 
 ### The Strategy: "Leaf Bags"
 
-The basic idea is to containerize the data into uninform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (defineable). Track what they contain in a local manifest. This method reduces how many files are uploaded (API costs), and reduces how many files to download (API costs) when you need to restore some files.
+In theory one could make a single giant tar file. But if you wanted to restore a single directory you would to download the entire tar ball which is very expensive. Or you could upload every file individually, but due to per-file API costs this gets expensive. There is a "sweet spot" where a few thousand files costs literally pennies for upload. The strategy then is to containerize the data into uniform size 'shipping containers' (.tar files) called "Bags" of about 40GB each (you choose the size). Track what the bags contain in a local database (JSON file). This method reduces how many files are uploaded (API costs), and reduces how many files are needed to download (API costs) when you need to restore some files.
 
-* **Request Fee Savings:** Grouping files into bags reduces the number of API requests.
-* **The 180-Day Solution:** This system is designed to make incremental backups **Once or Twice Per Year** due to AWS retention policy.
-  * *Note: Amazon has a **180-day minimum retention policy**. If you delete a file 30 days after uploading you are still charged for the full 180 days. Thus mirroring only makes financial sense every 6 months or more.*
-* **Leaf-Level Updates:** If a single file within a bag changes, the entire bag is re-uploaded and the old one deleted. In this system, uploading and deleting files is so cheap as to be nearly free. 
+In this system you define what is uploaded according to "branches" and "leaves" - this creates a list of items which are put into bags, the physical tar file.
 
-### Cost Analysis Example (10 TB Dataset)
-Imagine you have **10 TB** of data consisting of **10 million small files** (photos, docs, code).
+A simple example:
 
-| Metric | Raw Upload (Bad Strategy) | Glacier System (Bag Strategy) |
-| :--- | :--- | :--- |
-| **Object Count** | 10,000,000 files | ~250 Bags (40GB each) |
-| **Storage Cost** | $10 / month | $10 / month |
-| **Upload (PUT) Fees** | **~$500.00** (one time) | **~$0.01** (one time) |
-| **Management** | Nightmare | Simple |
+```text
+/home/books/A
+/home/books/B
+...
+/home/books/Z
+```
 
-By bagging the upload fees are almost eliminated.
+The branch is `/home/books` which has 26 leaves e.g. `/home/books/A` is a leaf. Each leaf gets added to a bag until the bag reaches 40GB then a new bag is created and so on. Thus bag1 might contain A..C, bag2 contains D..F, etc.. the bags might have a name like `books_bag1.tar`, `books_bag2.tar`, etc..
 
-*All prices as of January 2026*
+The bags are uploaded to Glacier. Every 180 days via cron the local files are checked for changes, if so new bags created and uploaded and the old bags deleted.
 
 ---
 
-## 2. Prerequisites & Dependencies
+## 2. Features
+* **Tape Mirroring**: Automatically synchronizes local directory trees to Amazon S3 for long-term cold storage.
+* **Tape Storage**: Files can be unattached from mirroring making it traditional tape storage.
+* **Optimized Packing**: Aggregates small files into uniform size "bags" to bypass AWS minimum object size penalties and reduce API request fees.
+* **Security**: Supports client-side GPG (AES-256) encryption so data is fully opaque before it leaves your machine.
+* **Financial Intelligence**: Generates reports on storage efficiency, monthly run rates, and estimated recovery costs.
+* **State-Aware Recovery**: Automates the "Thaw, Download, Decrypt, and Extract" pipeline with a single command.
+* **Logging**: Maintains a ledger of every AWS transaction and byte transferred for full accountability.
+* **Flexible Scheduling**: Supports flexible mirroring intervals (e.g., "Every 180 Days") on a per-directory basis.
+* **Vendor Neutral**: Program is a single Python script. Stores data in standard GNU Tar and GPG formats, ensuring files can always be recovered without this software.
+* **Total Recovery**: Keeps a copy of all programs and metadata on S3 so entire system can be recreated from scratch on a new machine.
+* **Intelligent Design**: Designed and written in collaboration with AI and a professional programmer.
+
+---
+
+## 3. Prerequisites & Dependencies
 
 Before running the system, ensure the following are installed:
 
@@ -54,11 +78,13 @@ Before running the system, ensure the following are installed:
 * **Linux**
 
 ### Tools
-* **Python 3.x**
+* **Python 3.8+**
 * **tar:** Standard GNU tar.
 * **gpg (Optional):** If you want to encrypt files. Standard installed.
-* **sshfs (Optional):** If you are also backing up files from remote servers.
+* **sshfs (Optional):** If you are backing up files from remote servers.
     * `sudo apt install sshfs`
+* **ssh passwordless login:** If you are backing up files from remote servers.
+  **Example**: `ssh user@machine.net` (logs in without prompting for a password)
 
 ### Python Libraries
 * **boto3:** The AWS SDK for Python.
@@ -68,7 +94,7 @@ Before running the system, ensure the following are installed:
 
 ---
 
-## 3. AWS Configuration Guide
+## 4. AWS Configuration Guide
 
 Setup Glacier Deep Archive on AWS
 
@@ -80,7 +106,7 @@ Setup Glacier Deep Archive on AWS
 ### Step 1: Create the Bucket
 1.  Log in to the **AWS Console** and search for **S3**.
 2.  Click **Create bucket**.
-3.  **Bucket Name:** Choose a unique name (e.g., `greenc-bucket`). *Update glacier.cfg.*
+3.  **Bucket Name:** Choose a unique name (e.g., `my-bucket`). *Update glacier.cfg.*
 4.  **Region:** Choose the region closest to you (e.g., `US East (N. Virginia) us-east-1`).
 5.  **Block Public Access:** Ensure "Block all public access" is CHECKED (Default).
 6.  Click **Create bucket**.
@@ -120,52 +146,21 @@ aws configure
 
 ---
 
-## 4. Logistical Concepts
-
-The architecture of this tool relies on two primary concepts: Leaves and Bags.
-
-* **Leaf (stuff being shipped):** A Leaf is the smallest thing the system tracks. A leaf is literally a directory name. The leaf will have sub-directories and files that get "bagged" into a tar file named after the leaf directory. If any file within a Leaf changes—triggering a change in the Leaf's metadata hash—the entire Leaf is considered "dirty" and will be repacked into new leaf bag(s) and reuploaded.
-
-* **Bag (where stuff is stored):** A Bag is a .tar file of uniform size (size defined in the configuration). Bags are the physical units uploaded to S3. Bags can contain 1 leaf, multiple leaves, or partial leaves - the system will determine. If a leaf contains a single file too large to fit into a standard size bag, the bag can increase in size. If there is not enough to fill a bag, the bag can be smaller. The standard size leaf bag is a target, not a requirement.
-
----
-
-## 4. The Yearly Lifecycle: How Mirroring Works
-
-This system works best on a **yearly or twice-yearly cadence**. Here is the lifecycle of your data:
-
-### Year 1 (2026): The Initial Upload
-You run the script. It hashes all your local data, packs them into bags, and uploads everything to the folder `2026-backup/`. It creates `inventory.json` a record of the hash (size) of every leaf. 
-
-### The Waiting Period (Jan - Dec)
-Your data sits in Deep Archive. You pay the monthly storage fee. 
-
-### Year 2 (2027): The Incremental Run
-It is now January 2027. You run the script again. It re-scans your local drive and compares it to the previous `inventory.json` and updates it.
-
-### The Cleanup (Pruning)
-After the Year 2 run, you have a mix of 2026 and 2027 files in your inventory.json - However, the *old versions* of the changed files are still sitting in `2026-backup/`, costing you money.
-* You run `glacier.py --prune --run`.
-* It detects that some of the old 2026 bags are no longer referenced by inventory.json
-* It deletes them from S3.
-* **No Penalty:** Because they sat there for >180 days, deleting them is free.
-
----
-
-## 6. Configuration Files
+## 5. Configuration Files
 
 ### `glacier.cfg`
 
 **Example:**
-```text
+```ini
 [settings]
-s3_bucket = greenc-bucket
+s3_bucket = my-bucket
 target_bag_gb = 40
-staging_dir = /home/greenc/glacier/stage
-manifest_dir = /home/greenc/glacier/manifests
-inventory_file = /home/greenc/glacier/inventory.json
-inventory_bak_dir = /home/greenc/glacier/invbak
-mnt_base = /home/greenc/mnt
+scan_interval_days = 190 # recommend at least > 180 + 2 due to various technical factors
+staging_dir = /path/to/glacier/stage
+manifest_dir = /path/to/glacier/manifests
+inventory_file = /path/to/glacier/inventory.json
+inventory_bak_dir = /path/to/glacier/invbak
+mnt_base = /path/to/mnt
 
 # Prices as of January 2026
 [pricing]
@@ -187,6 +182,7 @@ price_req_bulk_1k = 0.025
 
 * **`s3_bucket`:** The name of your S3 bucket created during the AWS Configuration Guide above.
 * **`target_bag_gb`:** The max size of each leaf bag. Recommend 10GB to 100GB depending on your data. Note that large data files like VMs will get their own leaf bag that is as large as needed to maintain a single leaf bag.
+* **`scan_interval_days`:** How many days to wait before attempting mirror. Recommend a number >= 182 due to slack in AWS accounting.
 * **`staging_dir`:** A temporary directory used for creating leaf bag (.tar) files. It should have enough free space for the largest leaf bag.
 * **`manifest_dir`:** Where to store the manifest files.
 * **`inventory_file`:** Location of the inventory.json file.
@@ -194,46 +190,87 @@ price_req_bulk_1k = 0.025
 * **`mnt_base`:** Root mounting point for a remote server for SSHFS purposes. 
 * **`[pricing]`:** Prices need to be filled in manually. They are not required, but useful for generating reports. Prices haved remained generally stable. They might change by locale.
 
-### `tree.txt` 
+### `tree.cfg` 
 
-This file defines what locations ("branches") are backed up. Branches are 1-level up from a leaf. They are also nothing more than a directory name, but one branch can have multiple leaves associated with it.
+This file defines what locations ("branches") are mirrored. Branches are 1-level up from a leaf. Branches are nothing more than a directory name. One branch can have multiple leaves associated underneath it.
 
-**Format:** Branches in `tree.txt` can be either a local directory name or a remote directory name. 
+**Format:** Branches in `tree.cfg` can be either a local directory name or a remote directory name. 
 
 **Example tree.txt:**
 ```text
-/home/greenc/cache/Backup ::IMMUTABLE
-greenc@fox:/home/greenc/Books ::MUTABLE
-/home/greenc/Desktop ::MUTABLE
+/path/to/data ::IMMUTABLE 
+/path/to/desktop ::MUTABLE ::ENCRYPT
+user@machine.net:/path/to/data ::MUTABLE
 ```
 
-Each line has two elements: *location* and *::TAG* .. where tag can be:
+Each line has two elements: *location* and *::TAG*
 
-* **`::IMMUTABLE (Private Container)`:** Use this for large, standalone directories. The script grants this branch total isolation. It is in effect a single leaf. It will never share a bag with another leaf. If the branch is smaller than the bag size (40GB), the bag is shipped partially empty to ensure sovereignty.
-* **`::MUTABLE (Shared Container)`:** Use this for parent directories containing many smaller folders. The script breaks these down into individual leaves and packs them efficiently into shared 40GB leaf bags. 
+**Logic Tags**
 
-**Examples**:
+* **`::MUTABLE`**
+  * **Behavior**: "Shared Storage" mode. It treats every top-level subdirectory as a separate leaf.
+  * **Use Case**: Best for active folders where you update new sub-projects constantly (e.g., /home/user/projects).
+  * **Example**: `/path/to/data ::MUTABLE`
+  * **Example**: You have a Books/ folder with 500 author subdirectories. If you accidentally delete only your Dickens collection, you only have to restore the "Charles Dickens" bag (2GB). You do not have to pay to retrieve an entire 1TB /Books bag just to get one author back.
 
-* **`::IMMUTABLE`:** You have a specific software project MyApp_v1/ that contains src/, bin/, lib/, and docs/. Items in this directly are useless apart, you likely would always restore the entire directory.
-* **`::MUTABLE`:** You have a Books/ folder with 500 author subdirectories. If you accidentally delete only your Dickens collection, you only have to restore the "Charles Dickens" bag (2GB). You do not have to pay to retrieve an entire 1TB /Books bag just to get one author back.
-* **`::MUTABLE`:** You have a Repos/ folder with 50 code repository subdirectories that have a lot of data files (1TB total). If you accidentally delete only 1 repo, you only have to restore the bag that contains that repo. You do not have to pay to retrieve the entire 1TB /Repo bag had it been set IMMUTABLE. 
-* **`::MUTABLE`:** Your Desktop/ or My Documents/ folder. You have folders for Taxes, Receipts, Letters, but you also have 50 random PDF files sitting directly in the folder. This is the messy folder, you are not sure what you will need to restore in the future.
+* **`::IMMUTABLE`**
+  * **Behavior**: "Sovereign Storage" mode. It treats the entire path as a single leaf.
+  * **Use Case**: Best for single massive entities or drives that should never be split up (e.g., a specific hard drive or a VM image folder).
+  * **Example**: `/path/to/data ::IMMUTABLE`
+  * **Example**: You have a specific software project MyApp_v1/ that contains src/, bin/, lib/, and docs/. Items in this directly are useless apart, you likely would always restore the entire directory.
 
-The location can be a local directory or a remote directory (see example above). If remote it will connect via sshfs and rsync. It assumes you have passwordless ssh configured.
+**Action Tags**
+
+* **`::COMPRESS`**
+  * **Behavior**: Runs the leaves through gzip, stored inside the bag as .tar.gz
+  * **Effect**: Saves space but takes more CPU/time.
+  * **Example**: `/path/to/data ::MUTABLE ::COMPRESS`
+
+* **`::ENCRYPT`**
+  * **Behavior**: Encrypts the leaves using GPG, stored inside the the bag as .tar.gpg or .tar.gz.gpg
+  * **Effect**: Security at all layers from network transfer to storage at S3. Takes more CPU/time.
+  * **Example**: `/path/to/data ::MUTABLE ::ENCRYPT`
+    * *Note: for text files ::COMPRESS + ::ENCRYPT is ok. For already compressed files (zip, mp3, m4b) recommend only ::ENCRYPT although it won't hurt anything to use both.*
+
+* **`::LOCKED`**
+  * **Behavior**: Glacier will refuse to perform any action on this branch (Mirror, Delete, Repack) unless you manually remove this tag.
+  * **Effect**: Glacier is no longer a mirror. S3 is a static backup of your bag files. Useful for storing data that will never change locally.
+  * **Example**: `/path/to/data ::MUTABLE ::ENCRYPT ::LOCKED`
+
+* **::EXCLUDE <Pattern>**
+  * **Behavior**: Skips specific folders within that branch. Allows for fine-tuning settings within a master branch.
+    * *Note: You can have multiple exclude tags on one line.*
+  * **Example**: `/path/to/data ::MUTABLE ::EXCLUDE temp_folder ::EXCLUDE log`
+  * **Example**: `/path/to/data/temp_folder ::IMMUTABLE ::COMPRESS`
+  * **Example**: `/path/to/data/log ::IMMUTABLE ::ENCRYPT`
+    *Note: In the above example every subdirectory in the branch /path/to/data is a leaf stored as-is, except for temp_folder and log which are stored as compressed and encrypted.*
+
+The /path/to/data can be a local directory or a remote directory eg. user@machine.net:/path/to/data -- If remote it will connect via sshfs and rsync. It assumes you have passwordless ssh configured.
 
 ### `exclude.txt`
-This is an exclude file used by tar. If you want to exclude directories or files deep within a Leaf directory, use this. The exclude.txt file should be kept in the same location as glacier.py
+This file contains a list of patterns to exclude from every backup job. It is used by both tar and rsync to filter out unwanted files (like temporary caches, trash, or build artifacts).
 
-**Example exclude.txt:**
+**Rules for exclude patterns**:
+* **Do NOT use full paths**: Do not write `/home/user/data/junk`
+* **Recursive by default**: If you write a folder name, it will be excluded everywhere it is found in every branch in the entire tree.
+* **Wildcards**: You can use * (matches anything) and ? (matches one character).
+
+To exclude a specific directory, you must write the path relative to the root of the branch being backed up.
+* **Example 1 (The Global)**: `__pycache__` (Excludes` __pycache__` folders anywhere they appear in any branch.)
+* **Example 2 (The Specific)**: If you are mirroring the branch `/home/user/projects` and want to exclude just the build folder inside "Project-X": `Project-X/build` (This excludes `/home/user/projects/Project-X/build`).
+
+Warning: Since this file is global, if you have another branch (e.g., `/home/user/archive`) that also happens to have a folder named `Project-X/build`, it will be excluded there too.
+
+* **Tip**: For truly isolated exclusions that apply only to one specific branch, use the ::EXCLUDE tag in your tree.cfg instead: `/home/user/projects ::MUTABLE ::EXCLUDE Project-X/build`
+
+**Example `exclude.txt`:**
 ```text
 number/dump
-today/bin/data
+__pycache__
 ```
 
-ie. the first line would exclude any files in the path /home/my/number/dump 
-
 ### `inventory.json`
-This is automatically created and tracks the state of every leaf. Deletion of the file will wipe the system and start like a fresh archive. **Keep backups of this file.** It is the database connecting the state of local and remote branches.
+This is automatically updated and tracks the state of every leaf. Deletion of the file will wipe the system and start over like a fresh archive. **Keep backups of this file.** It is the database connecting the state of local and remote branches.
 
 * **Recommendation:** If you lose this file by accident, delete all prior files on S3 and start over with a fresh upload to prevent massive duplication.
 * **`last_metadata_hash`:** Used to detect changes.
@@ -241,335 +278,325 @@ This is automatically created and tracks the state of every leaf. Deletion of th
 * **`archive_key`:** The exact S3 path where this file lives (e.g., `2026-backup/...`).
 
 ### `manifests/*.txt` (File-Level Indexes)
-These files provide a searchable, recursive list of every single file inside every bag. While tree.txt tracks top-level branches to archive, and `inventory.json` tracks "Leaves", the manifests track the specific files *inside* those leaf folders.
+These files provide a searchable list of every single file inside every bag. While `tree.cfg` tracks top-level branches to archive, and `inventory.json` tracks leaves, the manifests track the specific files *inside* those leaf folders.
 
 * **Purpose:** Allows you to find a specific file (e.g., "Where is `tax_return_2024.pdf`?") without having to pay to restore and download 40GB archives just to look inside them.
 * **Format:** Plain text files generated via the `find` command.
 * **Location (Local):** Stored in your configured `manifest_dir`.
 * **Location (Remote):** Uploaded to `s3://[bucket]/[year]-backup/manifests/`.
 * **Storage Class:** **S3 Standard (Hot)**.
-    * Unlike the heavy `.tar` bags which are frozen in Glacier Deep Archive, the manifests are kept in Standard storage.
+    * Unlike the `.tar` bags which are frozen in Glacier Deep Archive, the manifests are kept in Standard storage.
     * **Benefit:** You can instantly download the entire folder of text files and `grep` them to locate data in seconds, effectively for free.
 
 ---
 
-## 7. Quick Start
+## 6. Quick Start
+
+How to test the system.
 
 ### Step 1: Update glacier.cfg (see options above)
+* Update the directory paths and `s3_bucket`. Set `target_bag_gb` to 1 GB for this test.
 
-### Step 2: Create tree.txt of "branches" to backup (see instructions above)
+### Step 2: Make and populate directories
+* **Bash**: `mkdir -p glacier-test/{A,B,C} && for d in A B C; do fallocate -l 400M glacier-test/$d/test_data.bin; done`
+  *Note: this will create directories off your CWD called glacier-test/A B and C each with a 400MB test_data.bin*
 
-### Step 3: The "Dry Run" (Simulation)
+### Step 3: Create `tree.cfg` with a branch
+* Add this line to `tree.cfg`: `/absolute/path/to/glacier-test ::MUTABLE`
+
+### Step 4: The "Dry Run" (Simulation)
 Use this to check what *would* happen without uploading anything.
-```bash
-./glacier.py tree.txt
-```
-* **Output:** Generates `inventory_dryrun.json` and files in the manifest directory for inspection.
+* **Dry-run**: `./glacier.py --mirror-tree`
+* **Output:** The script will print the plan to the screen, showing how it packs A, B, and C into specific bags. It does not modify any files.
 
-### Step 4: The "Real Run" 
+### Step 5: The "Real Run" 
 Use this to actually upload files and update the master inventory.json
-```bash
-./glacier.py tree.txt --run
-```
+* **Live Run**: `./glacier.py --mirror-tree --run`
 * **Output:** Updates `inventory.json` and uploads `.tar` files to S3.
-* **Note:** The system will auto-mount remote SSH sources if/as needed. You should have passwordless ssh setup.
+  *Note: There is an S3 cost for this test. Due to the 180-day minimum retention policy, you will be billed for 6 months of storage upon deletion, but for 1.2GB this totals less than $0.01.*
+
+### Step 6: Cleanup
+To cleanup after the test. **Important** to avoid any latent charges from Amazon.
+
+* **Purge from S3 & Inventory**: This command will delete the S3 objects associated with this branch and remove the entry from `inventory.json`.
+  * `./glacier.py --delete-branch '/absolute/path/to/glacier-test' --run`
+  * *Note: Ensure the path matches exactly what you put in `tree.cfg` not including any ::TAGS*
+* **Remove Local Files**: Delete the dummy data.
+  * `rm -rf glacier-test`
+* **Update Config**: Open `tree.cfg` and remove the line you added in Step 3.
 
 ---
 
-## 9. Operations
+## 7. Operations
 
-Operation methods. **Order of `Steps` are significant!**
+Operation features and methods
 
-### Editing `tree.txt`
+### Managing Branches (changes to `tree.cfg`)
 
-* **Add a new branch to `tree.txt`**: 
-  * **Step 1**: Add the new line to `tree.txt`
-  * **Step 2**: `glacier --run`
+**Order of `Steps` are significant!**
 
-* **Delete a branch from `tree.txt`**: 
-  * **Step 1**: Remove the line from `tree.txt`
-  * **Step 2**: Run glacier: `glacier --reset-branch PATHNAME --run` where `PATHNAME` was deleted from `tree.txt`
-    * *Note: `PATHNAME` must match the deleted line. Do not include any ::tags.*
+* **Add a new branch to `tree.cfg`**: 
+  * **Step 1**: Edit `tree.cfg` and add the line.
+  * **Step 2**: Run `glacier --mirror-branch /path/to/branch --run`
+    * (The script will detect the new line and upload it.) *
 
-* **Rename a branch in `tree.txt`**:
-  * **Step 1**: Rename the line in tree.txt
-  * **Step 2**: Run glacier: `glacier --reset-branch OLD_PATHNAME --run` where `OLD_PATHNAME` is the original name from `tree.txt`
-    * *Note: `OLD_PATHNAME` must match the original line without any ::tags.*
+* **Delete a branch from `tree.cfg`**: 
+  * **Step 1**: Run `glacier --delete-branch /path/to/branch --run`
+    * *(Removes the data from S3 and the local inventory database.)*
+  * **Step 2**: Edit `tree.cfg` and remove the line.
 
-* **Edit ``::ENCRYPT`` tags**:
-  * **Step 1**: Add/remove the tag in `tree.txt`
-  * **Step 2**: Run glacier: `glacier --reset-branch PATHNAME --run` where the `PATHNAME` is the name from `tree.txt`
-    * *Note: `PATHNAME` must match the modified line without any `::tags`.*
+* **Rename a branch in `tree.cfg`**:
+  * *Note: In object storage, a rename is simply a "Delete Old" followed by an "Add New".*
+  * **Step 1**: Run `glacier --delete-branch /path/to/branch --run`
+  * **Step 2**: Edit `tree.cfg` and rename the line.
+  * **Step 3**: Run `glacier --mirror-tree --run`
 
-* **Edit ``::MUTABLE`` and ``::IMUTABLE`` tags**:
-  * **Step 1**: Follow **Delete a branch from `tree.txt`**
-  * **Step 2**: Follow **Add a new branch to `tree.txt`** with the new `::TAG`
-
-### Managing Leaf Bags
-
-* **Refresh or Repair a specific leaf bag**:
-  * *Use this if a leaf bag is missing from S3 or you suspect corruption.*
-  * **Step 1**: Run glacier: `glacier --reset-bag BAG_ID --run`
-    * *Example*: `glacier --reset-bag bag_0001 --run`
-    * *What happens*: *The script deletes bag_0001 from S3, then immediately re-packs that data into a **new** leaf bag ID (e.g. bag_0055) and uploads it.*
-
-* **Consolidate multiple small leaf bags**:
-  * *Use this to merge several small leaf bags into one efficient leaf bag to save on "Request" fees.*
-  * *Note: Leaf bags are soveriegn to each branch in `tree.txt` thus you can not merge leaf bags across `tree.txt` lines.*
-  * **Step 1**: Run glacier: `glacier --reset-bag BAG_ID_1 BAG_ID_2 ... --run`
-    * *Example*: `glacier --reset-bag bag_0001 bag_0002 bag_0003 --run`
-    * *What happens*: *The script deletes the three old leaf bags. During the re-upload phase, it will group all that data together and pack it into as few new leaf bags as possible.*
-    * See `--repack` to do this for the entire inventory of leaf bags, however it will delete everything from Amazon S3 as if starting over new.
+* **Edit ::ENCRYPT, ::MUTABLE or ::IMMUTABLE tags**:
+  * *Note: Changing these settings changes the fundamental structure of the archive. You must wipe the old version and re-upload.*
+  * **Step 1**: Edit the tag in `tree.cfg`
+  * **Step 2**: Run `glacier --mirror-branch /path/to/branch --force-reset --run`
+    * (The `--force-reset` flag tells the script to delete the existing S3 data for this branch and immediately re-upload it with the new settings.)*
 
 * **Note on Leaf Bag IDs**:
-  * *When you reset a leaf bag, the old ID (e.g. bag_0001) is permanently retired. The data will reappear in the next available highest leaf bag number. The only way to recover unused IDs is `--repack`*
+  * * Bag IDs (bag_0001) are immutable, once used they are not used again. Thus if the system needs to delete an old bag and upload a new it will have a new ID. It is possible to globally redo leaf bag IDs to compact and reuse retired numbers, see `--repack`*
+
+### Reporting & Inspection
+
+Tools to view your archive without modifying data.
+
+* **`--show-tree`**: Displays the full hierarchy of branches, bags, and leaves currently tracked in your local inventory.
+  * Run `./glacier.py --show-tree`
+
+* **`--show-branch`**: Shows details about a specific branch, including which bags it owns and the last time it was scanned.
+  * Run `./glacier.py --show-branch /path/to/branch`
+
+* **`--show-branch`**: Lists all leaves contained inside a specific `tar_id` or bag ID (e.g., bag_00042).
+  * Run `./glacier.py --show-bag bag_00042`
+
+* **`--find`**: Searches all local manifests for a specific filename. Useful for checking in which bag a file exists.
+  * Run `./glacier.py --find "my_important_doc.pdf"`
+
+  * The `--find` flag performs a reverse lookup, helping you locate which specific bag contains a file you need to restore.
+
+  * **How it works**:
+    * **Manifest Scan**: The script `greps` the local text manifest files (stored in your configured manifest_dir) for the search string.
+    * **Output**: It prints the specific bag ID (e.g., bag_00451) and the branch path.
+    * **Why use it**: If you need to recover a single file, this tells you exactly which .tar object to download from the S3 console, saving you from downloading the whole archive.
+
+* **`--report`**: Generates a detailed breakdown of storage usage, packing efficiency, and estimated monthly costs per branch.
+  * Run `./glacier.py --report`
+
+  * **What is included in the report**
+    * **Inventory State**: A breakdown of every branch, including the number of Bags and total Size.
+    * **Packing Efficiency (Waste %)**: A metric showing how much "empty air" is inside your bags.
+    * **Repack Risk**: The estimated cost to `--repack` a branch.
+    * *Note: This calculation includes Early Deletion Fees and Request costs to reorganize data.*
+    * **Monthly Storage Cost**: Estimated bill based on current AWS Glacier Deep Archive rates.
+    * **Disaster Recovery Estimates**:
+    * **Thaw Cost**: The standard retrieval fee to pull your entire archive off the tape archive.
+    * **Egress Cost**: The bandwidth cost to download the data to your local machine.
+
+* **`--audit`**: Checks if the files listed in your local `inventory.json` actually exist in the S3 bucket.
+  * Run `./glacier.py --audit`
+
+  * **What the Audit checks**:
+    * **Completeness**: Ensures every leaf bag ID listed in your inventory actually exists on S3.
+    * **Orphans**: Identifies files existing on S3 that are not in your local inventory. Delete these to save monthly costs.
+
+  * **Understanding Audit Results**
+    * **[OK]**: Your local state and S3 are perfectly synchronized.
+    * **[ALERT]**: One or more leaf bags are missing from S3. This indicates a failed upload or accidental deletion on the AWS console. See **Managing Leaf Bags** -> **Refresh or Repair a specific leaf bag** 
+    * **[NOTE]**: Orphan leaf bags were found. These are safe to delete.
+      * **Method A**: `glacier.py --prune --run` 
+        * *Delete all orphans on S3*
+        * *The age check logic will stop leaf bags from being deleted to avoid early deletion fees on leaf bags younger than 180 day*
+      * **Method B**: `aws s3 rm s3://my-bucket/2026-backup/my_host-book_bag_003.tar` 
+        * *Target a specific leaf bag by name*
+        * *(This method is not suggested it bypasses Glacier's logging of transactions)*
+
+### Maintenance & Tuning
+
+Options for optimizing storage, managing bandwidth, and system cleanup.
+
+**Optimization & Cleanup**
+
+* `--repack`
+  * **Description**: A global defragmentation tool. It runs the "Bin Packing" algorithm across the entire inventory tree.
+  * **Why use it**: 
+    * **Optimize Content**: Reshuffles file-to-bag assignments to ensure all bags are as close to the target size (e.g., 40GB) as possible.
+    * **Recover Bag IDs**: Optimizes the numbering sequence, potentially recovering and reusing "retired" bag numbers from deleted archives to close gaps in the sequence.
+  * **Usage**: `./glacier.py --mirror-branch /path/to/branch --repack --run`
+    * Note: This may trigger re-uploads if files are moved to new, more efficient bags. Use sparingly, fragmented bags are often not a problem vs. re-uploading entire branches.*
+  * It is a good idea to run an audit after a repack to make sure there are no orphan leaf bags taking up space
+    * Audit: Run `glacier --audit`
+      *(If orphans are found: `--prune --run`)*
+
+* `--prune`
+  **Description**: It scans the S3 bucket for any bag files that exist but are not present in your `local inventory.json`. It then deletes the orphans.
+  **Why use it**: Prune would typically be run right after `--mirror-tree --cron` to ensure your S3 bucket only has the needed files. It is also run if `--audit` finds orphans.
+  **Usage**: Run `./glacier.py --prune --run`
+
+**System Configuration**
+
+* `--limit LIMIT`
+  * **Description**: Sets a hard bandwidth limit for uploads in MB/s (Megabytes per second).
+  * **Why use it**: To prevent the backup script from consuming your entire internet connection bandwidth during large initial syncs.
+  * **Usage**: Run `./glacier.py --mirror-tree --limit 10 --run`
+    * *(Limits upload speed to 10 MB/s)*
+
+  * Uploading TB of data takes a long time, even days. It can cause problems for your network. It is recommend to run Glacier Mirror at about 50% of your network capacity to keep you and your ISP happy. To determine capacity, check your upload speed at a broadband speed test service. If it is reported in bits (not bytes) divide by 8. Then divide in half. Examples:
+
+  | Advertised Upload (Mbps) | ~Max Capacity (MB/s) | Comfortable `--limit` (50%) |
+  | :--- | :--- | :--- |
+  | 10 Mbps | 1.25 MB/s | `--limit 1` |
+  | 40 Mbps | 5 MB/s | `--limit 2` |
+  | 100 Mbps | 12.5 MB/s | `--limit 6` |
+  | 300 Mbps | 37.5 MB/s | `--limit 18` |
+  | 500 Mbps | 62.5 MB/s | `--limit 30` |
+  | 1000 Mbps (Gigabit) | 125 MB/s | `--limit 60` |
+
+* `--tree-file TREE_FILE`
+  * **Description**: Tells the script to use a different configuration file instead of the default `tree.cfg`.
+  * **Why use it**: Useful for testing.
+  * **Usage**: `./glacier.py --mirror-tree --tree-file my_test_tree.cfg --run`
+    * **CAUTION**: It is not possible to run multiple tree.cfg files e.g. `redwood.cfg` and `birch.cfg` - Glacier.py has only 1 inventory.json and a single S3 bucket. If you want multiple trees create a new S3 Bucket for each tree and install multiple installations of Glacier Mirror for each tree.
+
+* `--run`
+  * **Description**: The Global Safety Switch.
+  * **Behavior**:
+    * **Without `--run`**: The system runs in DRY RUN mode. It calculates hashes, checks S3, and prints exactly what it would do (e.g., "Uploading X", "Deleting Y"), but performs zero network actions or inventory writes.
+    * **With `--run`**: The system executes the plan, uploads files, deletes objects, and updates inventory.json.
+
+## 8. Automation
+
+* `--cron`
+  * **Description**: Suitable for automated scheduling with `crontab`.
+  * **Behavior**:
+    * Instead of immediately scanning files, it first checks the `last_scan` timestamp in your inventory.json.
+    * If the time elapsed is less than the `scan_interval_days` (defined in `glacier.cfg`), the script exits silently without doing any work.
+    * If the interval has passed, it wakes up, performs the mirror, and updates the timestamp.
+  * **Why use it**: Allows you to schedule the script to run daily (e.g., via crontab), while ensuring it only actually spins up your hard drives and checks for changes once every 6 months (or whatever interval you set).
+  * **Usage**: 
+    * **Tree**: `./glacier.py --mirror-tree --cron --run`
+    * **Branch**: `./glacier.py --mirror-branch /path/to/branch --cron --run`
+      *(This allows you to schedule branches on different cadences depending on urgency.)*
+
+### Full automation
+
+**Option A**: The Whole Tree
+
+This runs the entire tree. It is the simplest method.
+
+  * **Schedule**: Runs daily at 2:00 AM.
+  * **Logic**: The script checks `inventory.json`. If 180 days (or your configured interval) haven't passed for any given branch, it exits silently.
+  * **Prune**: We append the prune command to clean up orphaned bags after the mirror is done.
+```bash
+# Run entire tree. Script runs every 6 months per default setting in glacier.cfg
+0 2 * * * cd /path/to/glacier && ./glacier.py --mirror-tree --cron --run && ./glacier.py --prune --run >> /path/to/glacier/logs/backup.log 2>&1
+```
+
+**Option B**: Staggered Branches
+
+Use `--interval` if you want to process different branches at different cadences e.g. important papers every 6 months and deep archives every year or longer.
+
+```bash
+# Branch 1: "Work" - Runs every 6 months
+0 2 * 1,7 * cd /path/to/glacier && ./glacier.py --mirror-branch '/path/to/work' --cron --interval 180 --run >> /path/to/glacier/logs/work_backup.log 2>&1
+
+# Branch 2: "Mediafiles" - Runs every 2 years
+0 5 * 6 * cd /path/to/glacier && ./glacier.py --mirror-branch '/path/to/mediafiles' --cron --interval 730 --run >> /path/to/glacier/media_backup.log 2>&1
+```
 
 ---
 
-## 9. Advanced Features:
+## 9. Advanced Features
 
 ### Encryption
-Glacier supports GPG encryption. It works either at the Leaf level or can be applied to a single branch in `tree.txt`.
+Glacier supports GPG encryption.
 
 **Prerequisites**:
- * Encryption requires a file named `key.txt` to exist in the same directory as the script. To create this file safely:
+ * Encryption requires a file named `key.txt` to exist in the same directory as the script. To create this file:
    * **Method A (Secure)**: Run this command to type your password without it appearing in your history: 
-     ```bash
-     `stty -echo; printf 'Passphrase: '; read pw; stty echo; echo; echo "$pw" > key.txt && chmod 600 key.txt`
-     ```
+     * Bash: `stty -echo; printf 'Passphrase: '; read pw; stty echo; echo; echo "$pw" > key.txt && chmod 600 key.txt`
    * **Method B (Quick)**: Run this command (Warning: your password will appear in shell history): 
-     ```text
-     `echo 'your_passphrase_here' > key.txt && chmod 600 key.txt`
-     ```
+     * `echo 'your_passphrase_here' > key.txt && chmod 600 key.txt`
    * **Record Passphrase**: Record or remember your passphrase or risk never retrieving your encrypted files. Use a secure passphrase! 
- * *Note: If you are setting up glacier for the first time, run glacier (dry run) once to generate inventory_dryrun.json. You can use this file to find the correct Leaf pathnames.*
 
-**Setting up Encryption**
-
-  * **Option 1: Encrypt an entire branch (line in tree.txt)** Append the tag ::ENCRYPT to the line.
-
-    ```text
-    /home/greenc/cache/Backup ::IMMUTABLE ::ENCRYPT
-    ```
-  * **Option 2: Encrypt specific Leaves only (via `encrypt.txt`)** Create or edit `encrypt.txt` in the same directory as glacier.py. Add the full local mount path of the Leaf.
-    * **Wrong**: `greenc@mycomputer:/home/greenc/tools/artifact`
-    * **Correct**: `/home/greenc/mnt/mycompyter_tools/artifact`
-
-**Modifying Encryption on Uploaded Data**
-
-  * **Option 1: Specific Leaves (via encrypt.txt)** *Use this to efficiently re-upload only the specific leaf bag containing the leaf.*
-
-    * **Step 1**: Find both the leaf and leaf bag names:
-      * Method A: Search by a filename: `glacier --find FILENAME` (e.g. `glacier --find hello.html`)
-      * Method B: Open `inventory.json`, find the leaf path, and note the `"tar_id"` (e.g., `bag_00042`).
-    * **Step 2**: Add or remove the leaf path in `encrypt.txt`.
-    * **Step 3**: Run glacier: `glacier --reset-bag BAG_ID --run`
-      * *Example*: `glacier --reset-bag bag_00042 --run`
-
-  * **Option 2: Entire Branch (via tree.txt)** *Use this to re-upload the entire branch with new settings.*
-    * **Step 1**: Add or remove the `::ENCRYPT` tag in `tree.txt`.
-    * **Step 2**: Run glacier: `glacier --reset-branch PATHNAME --run`
-      *Note: `PATHNAME` must match the modified line. Do not include any ::tags.*
-
-### Upload speed
-
-* `--limit #` will cap your upload speed.
-
-Uploading TB of data takes a long time, even days. It can cause problems for your network. It is recommend to run Glacier at about 50% of your network capacity to keep you and your ISP happy. To determine capacity, check your upload speed at a broadband speed test service. If it is reported in bits (not bytes) divide by 8. Then divide in half. Examples:
-
-| Advertised Upload (Mbps) | ~Max Capacity (MB/s) | Comfortable `--limit` (50%) |
-| :--- | :--- | :--- |
-| 10 Mbps | 1.25 MB/s | `--limit 1` |
-| 40 Mbps | 5 MB/s | `--limit 2` |
-| 100 Mbps | 12.5 MB/s | `--limit 6` |
-| 300 Mbps | 37.5 MB/s | `--limit 18` |
-| 500 Mbps | 62.5 MB/s | `--limit 30` |
-| 1000 Mbps (Gigabit) | 125 MB/s | `--limit 60` |
-
-### Repacking
-
-If multiple leaves are assigned to a leaf bag and those leaves shrink over time (due to file deletions), the leaf bags become Swiss cheese. Repacking reshuffles these leaves to fill every leaf bag to the target size, reducing your total number of S3 objects.
-
-Repacking has significant downsides. Because leaf bag numbers are reassigned, almost all leaf bags need to be deleted from S3 and reuploaded. If your leaf bags on S3 are less than 6 months old there could be costs associated. There is the time to reupload everything. Typically the minor savings of reducing the number of leaf bag objects is not worth repacking except in a great while. If you only want to repack one leaf or a few leaf bags see the section **Consolidate multiple small leaf bags** 
-
-To repack, first run in dryrun mode to see what it would do:
-
-* `./glacier tree.txt --repack`
-
-Then run the repack
-
-* `./glacier.py tree.txt --repack --run`
-
-It is a good idea to run an audit after a repack to make sure there are no orphan leaf bags taking up space
-
-* `glacier tree.txt --audit`
-
-If you see orphans delete them manually eg. `aws s3 rm s3://my-bucket/2026-backup/my_host-book_bag_003.tar`
-
-### Report
-
-The `--report` flag provides a breakdown of your archive's health, data distribution, and estimated AWS costs. It uses the pricing constants defined in your `glacier.cfg` to project both monthly storage and potential recovery fees.
-
-To generate the report:
-
-* `glacier tree.txt --report`
-
-**What is included in the report?**
-
-* **Total Archive Size**: Your total footprint in TB and GB.
-* **Leaf Bag Count**: Total number of .tar objects currently stored on S3.
-* **Encryption Health**: How many gigabytes of your data are AES-256 encrypted.
-* **Monthly Storage Cost**: Estimated bill based on current Glacier Deep Archive rates.
-* **Recovery Estimates**: Projected costs (Thaw + Internet Egress) for:
-    * **Single Leaf Bag**: The cost to restore one standard leaf bag (e.g., 40GB) for minor data loss.
-    * **Full Archive**: The total "disaster recovery" cost to pull everything back from S3.
-
-### Audit
-
-The `--audit` flag performs an integrity check by comparing your local `inventory.json` (your "truth" file) against the actual objects currently stored in your S3 bucket.
-
-* `glacier tree.txt --audit`
-
-* **What the Audit checks**:
-  * **Completeness**: Ensures every leaf bag ID listed in your inventory actually exists on S3.
-  * **Orphans**: Identifies files existing on S3 that are not in your local inventory. Delete these to save monthly costs.
-
-* **Understanding Audit Results**
-  * **[OK]**: Your local state and S3 are perfectly synchronized.
-  * **[ALERT]**: One or more leaf bags are missing from S3. This indicates a failed upload or accidental deletion on the AWS console. See **Managing Leaf Bags** -> **Refresh or Repair a specific leaf bag** 
-  * **[NOTE]**: Orphan leaf bags were found. These are safe to delete.
-    * **Method A**: `glacier.py --prune --run` 
-      * *Delete all orphans on S3*
-      * *The age check logic will stop leaf bags from being deleted to avoid early deletion fees on leaf bags younger than 180 day*
-    * **Method B**: `aws s3 rm s3://my-bucket/2026-backup/my_host-book_bag_003.tar` 
-      * *Target a specific leaf bag by name*
-
-### Find
-
-The `--find` flag performs a reverse lookup from a filename to its associated leaf bag and leaf names needed to do leaf bag restores.
-
-* `glacier tree.txt --find FILENAME` (e.g., `glacier tree.txt --find "tax_return.pdf"`)
-
-**How it works**:
-
-* **Manifest Scan**: The script searches the local .txt manifest files (stored in your configured manifest_dir) for the filename.
-* **Inventory Mapping**: Once the file is found in a manifest, the script cross-references it with inventory.json.
-* **Result**: It outputs the specific **Leaf Bag name**, the **Leaf name** (parent folder), and the **Branch line** it belongs to (from tree.txt)
-
+**Adding encryption / Modifying encryption**
+ * See section **Configuration Files -> tree.cfg**
+ 
 ---
 
-## 10. Maintenance: Garbage Collection
+## 10. Recovery
 
-Because glacier only uploads changes, your backup in S3 will eventually be a mix of years (e.g., some 2026 files, some 2027 files).
+The system includes restore functions.
 
-Use the integrated `--prune` command to identify and delete files that are duplicated.
+### Basic Workflow
+
+The restore commands are state-aware. You run the same command to initiate a thaw request and to download the files once they are ready.
+
+* **Day 1 (Request)**: Run the command. The script detects the files are Frozen (Deep Archive) and issues a Thaw Request to AWS.
+* **Day 2/3 (Recover)**: Run the same command. The script sees the files are Ready, downloads them, decrypts them (if needed), and extracts them to your destination.
+
+**Restore Commands**
+* **Restore a single file**: Locates which bag contains the file, requests the thaw, and extracts only that file.
+  * Run `./glacier.py --restore-file "tax_return_2024.pdf" --to /home/user/restore_zone --run`
+
+* **Restore a bag**: If you know the ID (e.g., from an audit or log), recover just that bag.
+  * Run `./glacier.py --restore-bag bag_00542 --to /home/user/restore_zone --run`
+
+* **Restore a branch**: Recovers the full branch.
+  * Run `./glacier.py --restore-branch "/home/user/photos" --to /mnt/external_drive --tier Bulk --run`
+
+* **Restore tree**: Recovers the full tree.
+  * Run `./glacier.py --restore-tree --to /mnt/external_drive --tier Bulk --run`
+
+**Restore Options**
+ * **`--to PATH`**: Required. The destination directory for recovered files.
+ * **`--tier [Standard|Bulk]`**:
+    * **Standard (Default)**: Faster (12 hours).
+    * **Bulk**: Cheaper by about 20%, slower (48 hours).
+
+### Bootstrap
+Restoration of Glacier Mirror and all data file on a new machine
+
+* **Step 1:** Restore the software
+```bash
+sudo apt install python3-pip awscli tar gpg
+pip install boto3 tqdm
+```
+
+* **Step 2**: Configure AWS (see steps elsewhere)
+
+* **Step 3**: Download the config, inventory etc..
 
 ```bash
-./glacier.py --prune                # Dry Run
-./glacier.py --prune --run          # Execute Delete
-./glacier.py --force-prune --run    # Refuse delete any files younger than 180 days
+mkdir -p ~/glacier/manifests
+cd ~/glacier
+
+# 1. Download System Core (Script, Config, Inventory, Excludes)
+aws s3 cp s3://my-bucket/2026-backup/system/ . --recursive
+
+# 2. Download Search Index (Manifests)
+aws s3 cp s3://my-bucket/2026-backup/manifests/ ./manifests/ --recursive
+
+# 3. Create your key.txt (GPG password)
 ```
 
-This command is typically run in crontab immediately after an incremental run of glacier.
-
-## 11. Full automation
-
-The below options run glacier immediately followed by prune which is recommended. If glacier does not exit gracefully prune will not run.
-
-### Option A: Once a Year (Safest/Simplest)
-
+* **Step 4**: Verify it works
 ```bash
-# Run at 2:00 AM on January 15th every year
-0 2 15 1 * cd /home/greenc/glacier && ./glacier.py tree.txt --run && ./glacier.py --prune --run >> /home/greenc/glacier/backup.log 2>&1
+chmod +x glacier.py
+./glacier.py --audit
 ```
 
-### Option B: Every ~182 Days (Twice a Year) 
+* **Step 5**: Data Restoration
+  * See **Recovery** section
 
-This strategy maximizes protection while strictly avoiding Amazon's early deletion fees.
 
-```bash
-# Run at 2:00 AM on January 1st
-0 2 1 1 * cd /home/greenc/glacier && ./glacier.py tree.txt --run && ./glacier.py --prune --run >> backup.log 2>&1
-# Run at 2:00 AM on July 2nd
-0 2 2 7 * cd /home/greenc/glacier && ./glacier.py tree.txt --run && ./glacier.py --prune --run >> backup.log 2>&1
-```
-
-### Option C: Exact 182-Day Interval (Day of Year Logic)
-
-Same as Option B but a precise day-count. In a leap year, Option B would technically shift by one calendar day, but in C it stays exactly 182 days apart from the start of the year. Your crontab may or may not support this formatting, be sure to test it first.
-
-```bash
-# Executes only on Day 182 and Day 364 of each year
-0 2 * * * [ $(($(date +\%j) \% 182)) -eq 0 ] && cd /home/greenc/glacier && ./glacier.py tree.txt --run && ./glacier.py --prune --run >> /home/greenc/glacier/backup.log 2>&1
-```
-
-Why 182 days and not 180? Amazon S3 Glacier counts the "Early Deletion" period in seconds from the moment the upload completes. There are also timezone offsets and other things. This gives you some leeway. You may even want 190 days to be safe.
-
-This system, as currently designed, is for backup strategies every six months or yearly. You *can* upload more frequently than 182 days, but things get complicated quickly both technically and financially. For example, you may incure extra fees for duplicate copies (tape drives are additive not overwrite) if you forget to prune. You may incure extra fees if you make a modification change at less than 180 days. The scenarios are variable. As a suggestion: load this repo into AI and ask it specifically what you want to achieve.
-
----
-
-## 11. Restoration Procedure (WARNING: Costs $$$)
-
-## Disaster Recovery (system):
-If you lose your local computer, you can bootstrap the entire Glacier system which is automatically backed up in the "system" folder on S3. This will cost almost nothing because it's just a few text files and not on tape drive.
-
-1. **Rebuild the Environment:**
-   ```bash
-   mkdir -p ~/glacier/manifests
-   cd ~/glacier
-   
-   # Download the Brain, Code, Config, and Lists
-   # (Replace '2026' with the latest year available in your bucket)
-   aws s3 cp s3://greenc-bucket/2026-backup/system/ . --recursive
-   
-   # Download the Search Index
-   aws s3 cp s3://greenc-bucket/2026-backup/manifests/ ./manifests/ --recursive
-   ```
-
-## Disaster Recovery (files):
-
-Be aware of the costs to recover data. To thaw 10TB might cost $1,000. This is why this system was designed to be modular: you can download only the specific Leaf Bags that contain the files you need. A 40GB leaf bag might cost around $4 to recover.
-
-### Step 1: Locate the Leaf Bag
-* Option 1: Use `glacier.py --find FILENAME` to determine the Leaf Bag identifier
-* Option 2: Open `inventory.json` and find the `archive_key` for the folder you need.
-
-### Step 2: Thaw (Move from Tape to HDD)
-**Option A: Single File (Standard Tier - 12-48 hours)**
-```bash
-aws s3api restore-object --bucket greenc-bucket --key 2026-backup/rabbit_host-agros_bag_003.tar --restore-request '{"Days":7,"GlacierJobParameters":{"Tier":"Standard"}}'
-```
-
-**Option B: Thaw Everything (Bulk Tier - 48 hours)**
-Use this `tcsh` loop to request a restore for every file in the folder.
-```tcsh
-foreach file (`aws s3 ls s3://greenc-bucket/2026-backup/ --recursive | awk '{print $4}'`)
-    aws s3api restore-object --bucket greenc-bucket --key "$file" --restore-request '{"Days":14,"GlacierJobParameters":{"Tier":"Bulk"}}'
-end
-```
-
-* **Note**: Tier "Bulk" is about 20% cheaper than Tier "Standard"
-
-### Step 3: Check Status
-Use `head-object` to check if the file is ready. Look for `"ongoing-request": "false"` in the output.
-```bash
-aws s3api head-object --bucket greenc-bucket --key 2026-backup/rabbit_host-agros_bag_003.tar
-```
-
-### Step 4: Download
-```bash
-# Single Leaf Bag
-aws s3 cp s3://greenc-bucket/2026-backup/rabbit_host-agros_bag_003.tar /media/greenc/NewDrive/Restore/
-
-# All Leaf Bags
-aws s3 cp s3://greenc-bucket/2026-backup/ /media/greenc/NewDrive/Restore/ --recursive
-```
-
-### Step 5: Extract files
+## 11. Appendix: Manual File Extraction
 **IMPORTANT:** Use the `-S` flag to handle sparse files efficiently. This is particularly critical for VM images.
 ```bash
-tar -Sxvf rabbit_host-agros_bag_003.tar -C /home/greenc/Backup/VMs/
+tar -Sxvf rabbit_host-agros_bag_003.tar -C /home/user/Backup
 ```
 
 #### Workflow 1: Encryption Only
@@ -607,20 +634,4 @@ To delete everything on your S3 Glacier tape backup
 aws s3 rm s3://your-bucket-name --recursive
 ```
 This is irreversible. 
-
----
-
-## 8. Verification & Health Checks
-
-**View Contents:**
-```bash
-aws s3 ls s3://greenc-bucket/2026-backup/ --human-readable --summarize
-```
-
-**Verify Storage Class (Must be DEEP_ARCHIVE):**
-If the .tar leaf bags are not `DEEP_ARCHIVE`, they are not stored on tape, and you are paying significantly more than necessary. Ignore the /manifests and /systems files, they are intentionally not on tape.
-```bash
-aws s3api list-objects-v2 --bucket greenc-bucket --prefix 2026-backup/ --query 'Contents[].{Key: Key, StorageClass: StorageClass}' --output table
-```
-
 
