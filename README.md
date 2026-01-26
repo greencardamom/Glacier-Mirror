@@ -9,7 +9,7 @@
 **Created:** January 2026  
 **Author:** Greenc
 
-A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive (tape backup service). Maximize cost savings. Create a mirror of local data on tape. Can be cheaper than buying a tape drive and definitely easier.
+A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive (tape backup service). Maximize cost savings. Create a mirror of your data. Can be cheaper than buying a tape drive and definitely easier.
 
 ## Table of Contents
 1. [Introduction](#1-introduction-the-tape-backup-insurance-policy)
