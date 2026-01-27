@@ -9,7 +9,7 @@
 **Created:** January 2026  
 **Author:** Greenc
 
-A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive (tape backup service). Maximize cost savings. Can be cheaper than buying a tape drive and definitely easier.
+A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive (tape backup service). Maximize cost savings. Cheaper than buying a tape drive and definitely easier.
 
 ## Table of Contents
 1. [Introduction](#1-introduction-the-tape-backup-insurance-policy)
@@ -524,32 +524,32 @@ Use `--interval` if you want to process different branches at different cadences
 ## 9. Advanced Features
 
 ### Encryption
-Glacier supports GPG encryption using the GPG program. You do not need Glacier Mirror to decrypt the files, your .gpg files are independent.
+Glacier supports GPG encryption using the GPG program.
 
 There are two options for storing your password. One is easier and less secure; the other more complex but more secure.
 
 * **Simple Password Method**
   * *Good for personal use and simple setups*
-  * Create a file with just your password in it (no new lines or padded spaces)
+  * Create a file with just your password (no new lines or padded spaces)
   * In `glacier.cfg`: Set `method = password` and `password_file = /path/to/glacier-key.txt` 
   * Set strict permissions: `chmod 600 glacier-key.txt`
-    *(It's good practice to put the file in a different directory such as ~/secrets or ~/.glacier with the directory `chmod 700` permissons)*
+    * *(It's good practice to put the file in a different directory such as ~/secrets or ~/.glacier with the directory `chmod 700` permissons)*
   * To decrypt 1 file: `gpg --output decrypted_file.tar --decrypt encrypted_backup.gpg`
-    *(gpg will prompt for a password)*
+    * *(gpg will prompt for a password)*
   * To decrypt multiple files in a script: `gpg --batch --passphrase-file /path/to/glacier-key.txt --output decrypted_file.tar --decrypt encrypted_backup.gpg`    
 
 * **Key-Based Method**
   * *More secure for automated/server environments*
   * Run `glacier.py --generate-gpg-key` to create a key
-    * During this process, you'll be asked to provide your name, email, etc.
+    * * During this process, you'll be asked to provide your name, email, etc.
   * Run `glacier.py --show-key-id` to see your newly created key
   * In `glacier.cfg`: Set `method = key` and `gpg_key_id` to match your key's email or ID
   * To decrypt on any system with your private key: `gpg --output decrypted_file.tar --decrypt encrypted_backup.gpg`
   
-  * **Managing Keys:**
-    * Export your public key (for encryption only): `glacier.py --export-key glacier_public.asc --key-type public`
-    * Export your private key (for decryption, handle with care): `glacier.py --export-key glacier_private.asc --key-type private`
-    * Import a key on another system:
+* **Managing Keys:**
+  * Export your public key (for encryption only): `glacier.py --export-key glacier_public.asc --key-type public`
+  * Export your private key (for decryption, handle with care): `glacier.py --export-key glacier_private.asc --key-type private`
+  * Import a key on another system:
       ```
       gpg --import glacier_public.asc   # For encryption only
       gpg --import glacier_private.asc  # For decryption (keep secure!)
