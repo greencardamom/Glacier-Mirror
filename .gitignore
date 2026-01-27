@@ -4,7 +4,7 @@ __pycache__/
 
 # Local runtime data (in case you test-run here)
 inventory.json
-list.txt
+tree.cfg
 *.tar
 glacier_env/
 

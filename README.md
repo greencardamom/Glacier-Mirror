@@ -163,6 +163,15 @@ inventory_file = /path/to/glacier/inventory.json
 inventory_bak_dir = /path/to/glacier/invbak
 mnt_base = /path/to/mnt
 
+[encryption]
+method = password
+password_file = /path/to/glacier.key
+gpg_key_id = youremail@example.com
+
+[AWS]
+aws_account_id = 1234567890
+aws_region = us-alaska
+
 # Prices as of January 2026
 [pricing]
 min_retention_days = 180
@@ -189,7 +198,9 @@ price_req_bulk_1k = 0.025
 * **`inventory_file`:** Location of the inventory.json file.
 * **`inventory_bak_dir`:** If set, an optional location to store automated backups of inventory.json - no more than 1 per file created day or per run. Recommended.
 * **`mnt_base`:** Root mounting point for a remote server for SSHFS purposes. 
-* **`[pricing]`:** Prices need to be filled in manually. They are not required, but useful for generating reports. Prices haved remained generally stable. They might change by locale.
+* **`[encryption]`:** See documention for setting up encryption.
+* **`[AWS]`:** This is created automatically the first time Glacier Mirror runs. It is used for logging. If you wish to keep this private change the values to `REDACTED` and they will show in the logs as redacted. e.g. `aws_account_id = REDACTED`
+* **`[pricing]`:** Prices need to be filled in manually. They are not required, but useful for generating reports. Prices haved remained generally stable over time. They can change by locale.
 
 ### `tree.cfg` 
 
@@ -513,19 +524,43 @@ Use `--interval` if you want to process different branches at different cadences
 ## 9. Advanced Features
 
 ### Encryption
-Glacier supports GPG encryption.
+Glacier supports GPG encryption using the GPG program. You do not need Glacier Mirror to decrypt the files, your .gpg files are independent.
 
-**Prerequisites**:
- * Encryption requires a file named `key.txt` to exist in the same directory as the script. To create this file:
-   * **Method A (Secure)**: Run this command to type your password without it appearing in your history: 
-     * Bash: `stty -echo; printf 'Passphrase: '; read pw; stty echo; echo; echo "$pw" > key.txt && chmod 600 key.txt`
-   * **Method B (Quick)**: Run this command (Warning: your password will appear in shell history): 
-     * `echo 'your_passphrase_here' > key.txt && chmod 600 key.txt`
-   * **Record Passphrase**: Record or remember your passphrase or risk never retrieving your encrypted files. Use a secure passphrase! 
+There are two options for storing your password. One is easier and less secure; the other more complex but more secure.
 
-**Adding encryption / Modifying encryption**
- * See section **Configuration Files -> tree.cfg**
- 
+* **Simple Password Method**
+  * *Good for personal use and simple setups*
+  * Create a file with just your password in it (no new lines or padded spaces)
+  * In `glacier.cfg`: Set `method = password` and `password_file = /path/to/glacier-key.txt` 
+  * Set strict permissions: `chmod 600 glacier-key.txt`
+    *(It's good practice to put the file in a different directory such as ~/secrets or ~/.glacier with the directory `chmod 700` permissons)*
+  * To decrypt 1 file: `gpg --output decrypted_file.tar --decrypt encrypted_backup.gpg`
+    *(gpg will prompt for a password)*
+  * To decrypt multiple files in a script: `gpg --batch --passphrase-file /path/to/glacier-key.txt --output decrypted_file.tar --decrypt encrypted_backup.gpg`    
+
+* **Key-Based Method**
+  * *More secure for automated/server environments*
+  * Run `glacier.py --generate-gpg-key` to create a key
+    * During this process, you'll be asked to provide your name, email, etc.
+  * Run `glacier.py --show-key-id` to see your newly created key
+  * In `glacier.cfg`: Set `method = key` and `gpg_key_id` to match your key's email or ID
+  * To decrypt on any system with your private key: `gpg --output decrypted_file.tar --decrypt encrypted_backup.gpg`
+  
+  * **Managing Keys:**
+    * Export your public key (for encryption only): `glacier.py --export-key glacier_public.asc --key-type public`
+    * Export your private key (for decryption, handle with care): `glacier.py --export-key glacier_private.asc --key-type private`
+    * Import a key on another system:
+      ```
+      gpg --import glacier_public.asc   # For encryption only
+      gpg --import glacier_private.asc  # For decryption (keep secure!)
+      ```  
+* **Warning**: Methods are not interchangeable i.e. bags encrypted with the Simple method will not decrypt with the Key method even if they share the same password.
+  * How to check the method used: `gpg --list-packets encrypted_backup.gpg`
+    * **For password encryption**: Look for "sym alg" (symmetric algorithm)
+    * **For key encryption**: Look for "pubkey alg" (public key algorithm)
+
+* **Versions**: Different GPG versions might have slight differences in command syntax. These instructions are for GPG 2.x. If using GPG 1.x, some options may differ.
+
 ---
 
 ## 10. Recovery
