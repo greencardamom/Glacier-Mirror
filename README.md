@@ -63,8 +63,8 @@ The bags are uploaded to Glacier. Every 180 days via cron the local files are ch
 ---
 
 ## 2. Features
-* **Tape Mirroring**: Automatically synchronizes local directory trees to Amazon S3 for long-term cold storage.
-* **Tape Storage**: Files can be unattached from mirroring making it traditional tape storage.
+* **Tape Mirroring**: Automatically synchronizes local directory trees to Amazon S3's tape service for long-term cold storage.
+* **Tape Storage**: Files can be unattached from mirroring turning it into traditional tape storage (in the "cloud").
 * **Optimized Packing**: Aggregates small files into uniform size "bags" to bypass AWS minimum object size penalties and reduce API request fees.
 * **Security**: Supports client-side GPG (AES-256) encryption so data is fully opaque before it leaves your machine.
 * **Financial Intelligence**: Generates reports on storage efficiency, monthly run rates, and estimated recovery costs.
