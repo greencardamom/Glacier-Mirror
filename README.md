@@ -255,7 +255,7 @@ Each line has two elements: *location* and *::TAG*
   * **Example**: `/path/to/data ::MUTABLE ::EXCLUDE temp_folder ::EXCLUDE log`
   * **Example**: `/path/to/data/temp_folder ::IMMUTABLE ::COMPRESS`
   * **Example**: `/path/to/data/log ::IMMUTABLE ::ENCRYPT`
-    *Note: In the above example every subdirectory in the branch /path/to/data is a leaf stored as-is, except for temp_folder and log which are stored as compressed and encrypted.*
+    * *Note: In the above example every subdirectory in the branch /path/to/data is a leaf stored as-is, except for temp_folder and log which are stored as compressed and encrypted.*
 
 The /path/to/data can be a local directory or a remote directory eg. user@machine.net:/path/to/data -- If remote it will connect via sshfs and rsync. It assumes you have passwordless ssh configured.
 
@@ -309,7 +309,7 @@ How to test the system.
 ### Step 1: Update glacier.cfg (see options above)
 * Update the directory paths and `s3_bucket`. Set `target_bag_gb` to 1 GB for this test.
 
-### Step 2: Make and populate directories
+### Step 2: Make and populate test directories
 * **Bash**: `mkdir -p glacier-test/{A,B,C} && for d in A B C; do fallocate -l 400M glacier-test/$d/test_data.bin; done`
   *Note: this will create directories off your CWD called glacier-test/A B and C each with a 400MB test_data.bin*
 
@@ -541,7 +541,7 @@ There are two options for storing your password. One is easier and less secure; 
 * **Key-Based Method**
   * *More secure for automated/server environments*
   * Run `glacier.py --generate-gpg-key` to create a key
-    * * During this process, you'll be asked to provide your name, email, etc.
+    * *During this process, you'll be asked to provide your name, email, etc.*
   * Run `glacier.py --show-key-id` to see your newly created key
   * In `glacier.cfg`: Set `method = key` and `gpg_key_id` to match your key's email or ID
   * To decrypt on any system with your private key: `gpg --output decrypted_file.tar --decrypt encrypted_backup.gpg`
