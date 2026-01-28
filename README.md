@@ -16,7 +16,7 @@ See LICENSE.md for more details.
 **Created:** January 2026  
 **Author:** Greenc
 
-A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive ([a tape-based service](why-tape-tech.md)). Maximize cost savings. Cheaper than buying a tape drive youself and definitely easier.
+A Python tool for mirroring your files on Amazon's S3 "Glacier" Deep Archive ([a tape-based service](why-tape-tech.md)). Maximize cost savings. Cheaper than buying a tape drive youself, and definitely easier.
 
 Check out [Tape Backup Cost Analysis](tape-cost-analysis.md) to determine when buying your own tape storage becomes cost-effective. Until then, cloud tape backup is an affordable option. 
 
@@ -66,13 +66,13 @@ The bags are uploaded to Glacier. Every 180 days via cron the local files are ch
 
 ## 2. Features
 * **Tape Mirroring**: Automatically synchronizes local directory trees to Amazon S3's tape service for long-term cold storage.
-* **Tape Storage**: Files can be unattached from mirroring turning it into traditional tape storage (in the "cloud").
+* **Tape Storage**: Files can be unattached from mirroring turning it into basic storage.
 * **Optimized Packing**: Aggregates small files into uniform size "bags" to bypass AWS minimum object size penalties and reduce API request fees.
 * **Security**: Supports client-side GPG (AES-256) encryption so data is fully opaque before it leaves your machine.
 * **Financial Intelligence**: Generates reports on storage efficiency, monthly run rates, and estimated recovery costs.
 * **State-Aware Recovery**: Automates the "Thaw, Download, Decrypt, and Extract" pipeline with a single command.
 * **Logging**: Maintains a ledger of every AWS transaction and byte transferred for full accountability.
-* **Flexible Scheduling**: Supports flexible mirroring intervals (e.g., "Every 180 Days") on a per-directory basis.
+* **Flexible Scheduling**: Supports flexible mirroring intervals (e.g., "Every 190 Days" or "Every 480 Days") set on a per-branch basis.
 * **Vendor Neutral**: Program is a single Python script. Stores data in standard GNU Tar and GPG formats, ensuring files can always be recovered without this software.
 * **Total Recovery**: Keeps a copy of all programs and metadata on S3 so entire system can be recreated from scratch on a new machine.
 * **Intelligent Design**: Designed and written in collaboration with AI and a professional programmer.
@@ -94,7 +94,7 @@ Before running the system, ensure the following are installed:
 * **sshfs (Optional):** If you are backing up files from remote servers.
     * `sudo apt install sshfs`
 * **ssh passwordless login:** If you are backing up files from remote servers.
-  **Example**: `ssh user@machine.net` (logs in without prompting for a password)
+  * **Example**: `ssh user@machine.net` (logs in without prompting for a password)
 
 ### Python Libraries
 * **boto3:** The AWS SDK for Python.
@@ -147,11 +147,11 @@ This will save you money - if an upload is aborted it can leave temporary fragme
 7. Check Delete incomplete multipart uploads and set it to 7 days.
 
 ### Step 5: Configure the System
-Run this command on your Linux machine and paste the keys when prompted:
+Run this command on your Linux machine and paste in the keys from `Step 3` when prompted:
 ```bash
 aws configure
 ```
-* **Region:** Use the same region code from Step 1 (e.g., `us-alaska-1`).
+* **Region:** Use the same region code from Step 1 (e.g., `us-east-1`).
 * **Output format:** `json`.
 
 ---
@@ -179,7 +179,7 @@ gpg_key_id = youremail@example.com
 
 [AWS]
 aws_account_id = 1234567890
-aws_region = us-alaska
+aws_region = us-east-1
 
 # Prices as of January 2026
 [pricing]
@@ -202,14 +202,14 @@ price_req_bulk_1k = 0.025
 * **`s3_bucket`:** The name of your S3 bucket created during the AWS Configuration Guide above.
 * **`target_bag_gb`:** The max size of each leaf bag. Recommend 10GB to 100GB depending on your data. Note that large data files like VMs will get their own leaf bag that is as large as needed to maintain a single leaf bag.
 * **`scan_interval_days`:** How many days to wait before attempting mirror. Recommend a number >= 182 due to slack in AWS accounting.
-* **`staging_dir`:** A temporary directory used for creating leaf bag (.tar) files. It should have enough free space for the largest leaf bag.
+* **`staging_dir`:** A temporary directory used for creating leaf bag (.tar) files. It should have enough free space for the largest leaf bag. Ideally locally mounted.
 * **`manifest_dir`:** Where to store the manifest files.
-* **`inventory_file`:** Location of the inventory.json file.
-* **`inventory_bak_dir`:** If set, an optional location to store automated backups of inventory.json - no more than 1 per file created day or per run. Recommended.
+* **`inventory_file`:** Location for the `inventory.json` database file.
+* **`inventory_bak_dir`:** If set, an optional location to store automated backups of `inventory.json` - no more than 1 per file created day or per run. Recommended.
 * **`mnt_base`:** Root mounting point for a remote server for SSHFS purposes. 
-* **`[encryption]`:** See documention for setting up encryption.
+* **`[encryption]`:** See documention below for setting up encryption.
 * **`[AWS]`:** This is created automatically the first time Glacier Mirror runs. It is used for logging. If you wish to keep this private change the values to `REDACTED` and they will show in the logs as redacted. e.g. `aws_account_id = REDACTED`
-* **`[pricing]`:** Prices need to be filled in manually. They are not required, but useful for generating reports. Prices haved remained generally stable over time. They can change by locale.
+* **`[pricing]`:** Prices need to be filled in manually. They are not required, but useful for generating reports. Prices haved remained generally stable over time. They change by locale.
 
 ### `tree.cfg` 
 
