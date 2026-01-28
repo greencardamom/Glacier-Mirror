@@ -2,6 +2,7 @@
 import os
 import sys
 
+# Critical dependencies check first
 try:
     import boto3
     from tqdm import tqdm
@@ -11,6 +12,13 @@ except ImportError:
     print("Or ensure your virtual environment is activated.")
     sys.exit(1)
 
+# System Metadata constants
+VERSION = "1.0"
+SYSTEM_NAME = "Glacier Mirror"
+SYSTEM_DESCRIPTION = "Amazon S3 Glacier Deep Archive Tape Backup Management"
+DEFAULT_TREE_FILE = "tree.cfg"  # <--- Chang to rename the file globally
+
+# Standard library imports
 import glob
 import time
 import threading
@@ -30,6 +38,17 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from boto3.s3.transfer import TransferConfig # Added for throttling
 
+# Configuration handling
+config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'glacier.cfg')
+config = configparser.ConfigParser()
+
+if not os.path.exists(config_path):
+    print(f"Error: Configuration file not found at {config_path}")
+    sys.exit(1)
+
+config.read(config_path)
+
+# AWS metadata function (kept in same position as required)
 def ensure_aws_metadata(config):
     """
     Respects 'REDACTED' for privacy or fetches metadata dynamically.
@@ -72,24 +91,10 @@ def ensure_aws_metadata(config):
 
     return final_id, final_region
 
-# System Metadata
-VERSION = "1.0"
-SYSTEM_NAME = "Glacier Mirror"
-SYSTEM_DESCRIPTION = "Amazon S3 Glacier Deep Archive Tape Backup Management"
-DEFAULT_TREE_FILE = "tree.cfg"  # <--- Chang to rename the file globally
-
-# --- CONFIGURATION LOADER ---
-config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'glacier.cfg')
-config = configparser.ConfigParser()
-
-if not os.path.exists(config_path):
-    print(f"Error: Configuration file not found at {config_path}")
-    sys.exit(1)
-
-config.read(config_path)
-
+# Load AWS metadata
 AWS_ACCOUNT_ID, AWS_REGION = ensure_aws_metadata(config)
 
+# Load configuration settings
 try:
     STAGING_DIR = config['settings']['staging_dir']
     MANIFEST_DIR = config['settings']['manifest_dir']
@@ -103,9 +108,8 @@ try:
 except KeyError as e:
     print(f"Error: Missing configuration key: {e}")
     sys.exit(1)
-# ----------------------------
 
-# Globals
+# Global constants
 CURRENT_YEAR = datetime.now().strftime('%Y')
 S3_PREFIX = f"{CURRENT_YEAR}-backup/"
 BYTES_PER_GB = 1024 * 1024 * 1024
@@ -113,8 +117,7 @@ TARGET_SIZE_BYTES = TARGET_BAG_GB * BYTES_PER_GB
 s3_client = boto3.client('s3')
 
 # UI Formatting Constants
-# Length of "[NET: RSYNC]" is 12. We add 1 for spacing = 13.
-STATUS_WIDTH = 13
+STATUS_WIDTH = 13  # Length of "[NET: RSYNC]" is 12. We add 1 for spacing = 13.
 
 # --- HELPER FUNCTIONS ---
 
@@ -447,25 +450,78 @@ def generate_summary(inventory, run_stats, is_live):
 
 # --- PROCESSING ---
 
-def construct_tar_command(tar_path, leaf_list, branch_root, designator, passphrase_file, branch_leaves, remote_conn, remote_base_path, excludes=None):
+def construct_tar_command(tar_path, leaf_list, branch_root, designator, passphrase_file, branch_leaves, remote_conn, remote_base_path, excludes=None, encryption_config=None):
+    """
+    Constructs a tar command to archive leaves, handling encryption and compression as specified.
+    
+    Returns:
+        tuple: (command string, list of temporary files to clean up)
+    """
+    # 1. Build exclude arguments
+    exclude_args = build_exclude_arguments(excludes)
+    
+    # 2. Process each leaf and build tar sequence
+    temp_files_to_clean, tar_sequence = process_leaves_for_tar(
+        leaf_list, 
+        branch_root, 
+        designator, 
+        passphrase_file, 
+        branch_leaves, 
+        remote_conn, 
+        remote_base_path, 
+        encryption_config
+    )
+    
+    # 3. Optimize tar arguments for efficiency
+    optimized_args = optimize_tar_arguments(tar_sequence)
+    
+    # 4. Generate the final command
+    cmd = generate_final_tar_command(tar_path, exclude_args, optimized_args)
+    
+    return cmd, temp_files_to_clean
+
+
+def build_exclude_arguments(excludes=None):
+    """
+    Builds the exclude arguments for the tar command.
+    
+    Args:
+        excludes: List of patterns to exclude
+        
+    Returns:
+        str: Formatted exclude flags for tar command
+    """
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    
     exclude_path = os.path.join(base_dir, "exclude.txt")
-    exclude_args = [f"--exclude-from={shlex.quote(exclude_path)}"] if os.path.exists(exclude_path) else []
+    exclude_args = []
     
+    # Add standard exclude file if it exists
+    if os.path.exists(exclude_path):
+        exclude_args.append(f"--exclude-from={shlex.quote(exclude_path)}")
+    
+    # Add custom excludes if provided
     if excludes:
         for ex in excludes:
-            # Python's list handling protects spaces automatically
             exclude_args.append(f"--exclude {shlex.quote(ex)}")
-            
-    exclude_flag = " ".join(exclude_args)
     
+    # Join all exclude arguments with spaces
+    return " ".join(exclude_args)
+
+
+def process_leaves_for_tar(leaf_list, branch_root, designator, passphrase_file, branch_leaves, 
+                          remote_conn, remote_base_path, encryption_config):
+    """
+    Process each leaf to determine how it should be included in the tar archive.
+    
+    Returns:
+        tuple: (list of temp files to clean up, list of tar sequence entries)
+    """
     temp_files_to_clean = []
     tar_sequence = [] 
     
     # State tracking for display styles
     mutable_header_printed = False
-    pad_width = STATUS_WIDTH + 2
+    pad_width = STATUS_WIDTH + 2  # From global constants
 
     total_leaves = len(leaf_list)
     for idx, leaf in enumerate(leaf_list, 1):
@@ -475,256 +531,556 @@ def construct_tar_command(tar_path, leaf_list, branch_root, designator, passphra
         needs_encrypt = check_encryption_needed(designator)    
         needs_compress = check_compression_needed(designator)
         
-        # --- DISPLAY LOGIC ---
-        if needs_encrypt or needs_compress:                    
-            # STYLE: Active Ledger (The "Work" Style)
-            # We reset the mutable header flag so if we switch back, it prints again (rare mixed case)
-            mutable_header_printed = False 
+        # Display logic based on leaf processing type
+        display_leaf_header(
+            idx, total_leaves, leaf_path, needs_encrypt, needs_compress, 
+            mutable_header_printed, pad_width
+        )
+        
+        # Update the header printed flag if we're using mutable list style
+        if not (needs_encrypt or needs_compress):
+            mutable_header_printed = True
             
-            label = f"  > Leaf {idx}/{total_leaves}"
-            print(f"\n{label:<{pad_width}}: {leaf_path}")
-            
-        else:
-            # STYLE: Mutable List (The "Fast" Style)
-            if not mutable_header_printed:
-                label = "  > Leaves"
-                print(f"\n{label:<{pad_width}}:")
-                mutable_header_printed = True
-            
-            # Print the indented list item
-            # [01/44] format keeps it tidy
-            print(f"        [{idx:02d}/{total_leaves}] {leaf_path}")
-        # ---------------------
-
+        # Process the leaf based on its requirements
         if needs_encrypt:
-            suffix = ".gz.gpg" if needs_compress else ".gpg"
-            inner_name = "__BRANCH_ROOT__" + suffix if leaf['is_branch_root'] else f"{rel_path}{suffix}"
-            
-            cluster_files = leaf['files'] if leaf['is_branch_root'] else None
-
-            temp_file = encrypt_leaf(leaf_path, 
-                                     files=cluster_files, 
-                                     passphrase_file=passphrase_file, 
-                                     compress=needs_compress, 
-                                     remote_conn=remote_conn, 
-                                     remote_base_path=remote_base_path,
-                                     local_branch_root=branch_root,
-                                     expected_size=leaf['size']
-                        )
-            
-            if temp_file:
-                temp_files_to_clean.append(temp_file)
-                base_tmp = os.path.basename(temp_file)
-                transform_expr = f"s#{base_tmp}#{inner_name}#"
-                arg = f"--transform={shlex.quote(transform_expr)} {shlex.quote(base_tmp)}"
-                tar_sequence.append((STAGING_DIR, arg))
-                branch_leaves[leaf['key']]['encrypted'] = True
-                branch_leaves[leaf['key']]['compressed'] = needs_compress
-
+            process_encrypted_leaf(
+                leaf, branch_root, rel_path, passphrase_file, needs_compress,
+                remote_conn, remote_base_path, branch_leaves, tar_sequence, 
+                temp_files_to_clean, encryption_config
+            )
         elif needs_compress:
-            inner_name = "__BRANCH_ROOT__.tar.gz" if leaf['is_branch_root'] else f"{rel_path}.tar.gz"
-            cluster_files = leaf['files'] if leaf['is_branch_root'] else None
-            temp_file = compress_leaf(leaf_path, 
-                                      files=cluster_files, 
-                                      remote_conn=remote_conn, 
-                                      remote_base_path=remote_base_path, 
-                                      local_branch_root=branch_root, 
-                                      expected_size=leaf['size']
-                        )            
-            
-            if temp_file:
-                temp_files_to_clean.append(temp_file)
-                base_tmp = os.path.basename(temp_file)
-                transform_expr = f"s#{base_tmp}#{inner_name}#"
-                arg = f"--transform={shlex.quote(transform_expr)} {shlex.quote(base_tmp)}"
-                tar_sequence.append((STAGING_DIR, arg))
-                branch_leaves[leaf['key']]['compressed'] = True
-                branch_leaves[leaf['key']]['encrypted'] = False
-
+            process_compressed_leaf(
+                leaf, branch_root, rel_path, remote_conn, remote_base_path,
+                branch_leaves, tar_sequence, temp_files_to_clean
+            )
         else:
-            # Mutable Passthrough
-            branch_leaves[leaf['key']]['encrypted'] = False
-            branch_leaves[leaf['key']]['compressed'] = False
-            if leaf['is_branch_root']:
-                for f in leaf['files']: tar_sequence.append((branch_root, shlex.quote(f)))
-            else:
-                tar_sequence.append((branch_root, shlex.quote(rel_path)))
+            # Simple passthrough for standard leaves
+            process_standard_leaf(
+                leaf, branch_root, branch_leaves, tar_sequence
+            )
+    
+    return temp_files_to_clean, tar_sequence
 
+
+def display_leaf_header(idx, total_leaves, leaf_path, needs_encrypt, needs_compress, 
+                       mutable_header_printed, pad_width):
+    """Display appropriate header for the leaf being processed."""
+    if needs_encrypt or needs_compress:                    
+        # STYLE: Active Ledger (The "Work" Style) - Each leaf gets its own header
+        label = f"  > Leaf {idx}/{total_leaves}"
+        print(f"\n{label:<{pad_width}}: {leaf_path}")
+    elif not mutable_header_printed:
+        # STYLE: Mutable List (The "Fast" Style) - One header for all standard leaves
+        label = "  > Leaves"
+        print(f"\n{label:<{pad_width}}:")
+        # The actual leaf will be printed by the caller after setting mutable_header_printed to True
+    
+    # For subsequent leaves in mutable list style, print indented list item
+    if not (needs_encrypt or needs_compress) and mutable_header_printed:
+        print(f"        [{idx:02d}/{total_leaves}] {leaf_path}")
+
+
+def process_encrypted_leaf(leaf, branch_root, rel_path, passphrase_file, needs_compress,
+                          remote_conn, remote_base_path, branch_leaves, tar_sequence, 
+                          temp_files_to_clean, encryption_config):
+    """Process a leaf that needs encryption."""
+    suffix = ".gz.gpg" if needs_compress else ".gpg"
+    inner_name = "__BRANCH_ROOT__" + suffix if leaf['is_branch_root'] else f"{rel_path}{suffix}"
+    
+    cluster_files = leaf['files'] if leaf['is_branch_root'] else None
+
+    temp_file = encrypt_leaf(
+        leaf['path'], 
+        files=cluster_files, 
+        passphrase_file=passphrase_file, 
+        compress=needs_compress, 
+        remote_conn=remote_conn, 
+        remote_base_path=remote_base_path,
+        local_branch_root=branch_root,
+        expected_size=leaf['size'],
+        encryption_config=encryption_config
+    )
+    
+    if temp_file:
+        temp_files_to_clean.append(temp_file)
+        base_tmp = os.path.basename(temp_file)
+        transform_expr = f"s#{base_tmp}#{inner_name}#"
+        arg = f"--transform={shlex.quote(transform_expr)} {shlex.quote(base_tmp)}"
+        tar_sequence.append((STAGING_DIR, arg))
+        branch_leaves[leaf['key']]['encrypted'] = True
+        branch_leaves[leaf['key']]['compressed'] = needs_compress
+
+
+def process_compressed_leaf(leaf, branch_root, rel_path, remote_conn, remote_base_path,
+                           branch_leaves, tar_sequence, temp_files_to_clean):
+    """Process a leaf that needs compression but not encryption."""
+    inner_name = "__BRANCH_ROOT__.tar.gz" if leaf['is_branch_root'] else f"{rel_path}.tar.gz"
+    cluster_files = leaf['files'] if leaf['is_branch_root'] else None
+    
+    temp_file = compress_leaf(
+        leaf['path'], 
+        files=cluster_files, 
+        remote_conn=remote_conn, 
+        remote_base_path=remote_base_path, 
+        local_branch_root=branch_root, 
+        expected_size=leaf['size']
+    )            
+    
+    if temp_file:
+        temp_files_to_clean.append(temp_file)
+        base_tmp = os.path.basename(temp_file)
+        transform_expr = f"s#{base_tmp}#{inner_name}#"
+        arg = f"--transform={shlex.quote(transform_expr)} {shlex.quote(base_tmp)}"
+        tar_sequence.append((STAGING_DIR, arg))
+        branch_leaves[leaf['key']]['compressed'] = True
+        branch_leaves[leaf['key']]['encrypted'] = False
+
+
+def process_standard_leaf(leaf, branch_root, branch_leaves, tar_sequence):
+    """Process a leaf that needs neither encryption nor compression."""
+    branch_leaves[leaf['key']]['encrypted'] = False
+    branch_leaves[leaf['key']]['compressed'] = False
+    
+    if leaf['is_branch_root']:
+        for f in leaf['files']: 
+            tar_sequence.append((branch_root, shlex.quote(f)))
+    else:
+        rel_path = os.path.relpath(leaf['path'], branch_root)
+        tar_sequence.append((branch_root, shlex.quote(rel_path)))
+
+
+def optimize_tar_arguments(tar_sequence):
+    """
+    Optimize tar arguments by grouping by context (directory).
+    
+    Returns:
+        list: Optimized argument list for tar command
+    """
     optimized_args = []
     current_context = None
+    
     for context, arg in tar_sequence:
         if context != current_context:
             optimized_args.append(f"-C {shlex.quote(context)}")
             current_context = context
         optimized_args.append(arg)
+    
+    return optimized_args
 
+
+def generate_final_tar_command(tar_path, exclude_flag, optimized_args):
+    """
+    Generate the final tar command string.
+    
+    Returns:
+        str: Complete tar command
+    """
+    # Check if GNU tar is available for sparse file support
     is_gnu = "GNU" in subprocess.getoutput("tar --version")
     sparse_flag = "-S" if is_gnu else ""
 
     cmd = f"tar {sparse_flag} {exclude_flag} -cf {shlex.quote(tar_path)} {' '.join(optimized_args)}"    
+    return cmd
 
-    return cmd, temp_files_to_clean
 
-def process_bag(bag_num, leaf_list, branch_root, short_name, bag_size_bytes, is_live, branch_leaves, hostname, branch_stats, upload_limit_mb, designator, passphrase_file, remote_conn, remote_base_path, inventory, excludes=None):
+def process_bag(bag_num, leaf_list, branch_root, short_name, bag_size_bytes, is_live, branch_leaves, hostname, branch_stats, upload_limit_mb, designator, passphrase_file, remote_conn, remote_base_path, inventory, excludes=None, encryption_config=None):
+    """
+    Process a bag containing multiple leaves for backup.
+    
+    Args:
+        bag_num: Bag number identifier
+        leaf_list: List of leaves to include in the bag
+        branch_root: Root directory of the branch
+        short_name: Short name for the branch
+        bag_size_bytes: Total size of the bag in bytes
+        is_live: If True, perform actual operations; if False, dry run
+        branch_leaves: Dictionary of branch leaves from inventory
+        hostname: Host machine name
+        branch_stats: Stats tracking dictionary for the branch
+        upload_limit_mb: Upload bandwidth limit in MB/s (0 for unlimited)
+        designator: Tags for the branch (e.g., "MUTABLE ENCRYPT")
+        passphrase_file: Path to encryption passphrase file
+        remote_conn: Remote connection string (if remote)
+        remote_base_path: Base path on remote system
+        inventory: Global inventory dictionary
+        excludes: List of patterns to exclude
+        encryption_config: Encryption configuration settings
+    """
+    # 1. Prepare bag information
+    bag_info = prepare_bag_info(bag_num, short_name, hostname)
+    tar_path, s3_key = bag_info["tar_path"], bag_info["s3_key"]
+    
+    # 2. Print bag header
+    print_bag_header(bag_num, bag_size_bytes)
+    
+    # 3. Generate manifest
+    generate_bag_manifest(bag_info["tar_name"], leaf_list, branch_root, is_live)
+    
+    # 4. Check if upload is needed
+    if not should_upload_bag(leaf_list, branch_leaves):
+        update_skip_stats(branch_stats, bag_size_bytes)
+        print_skip_message(bag_info["tar_name"])
+        return
+
+    # 5. Update upload stats
+    update_upload_stats(branch_stats, bag_size_bytes)
+    
+    # 6. Update inventory with expected S3 location
+    update_inventory_locations(leaf_list, branch_leaves, s3_key)
+
+    # 7. In dry run mode, print message and return
+    if not is_live:
+        print_dry_run_message(bag_info["tar_name"], s3_key, S3_BUCKET)
+        return
+
+    # 8. Build and upload the bag
+    etag = build_and_upload_bag(
+        tar_path, leaf_list, branch_root, designator, passphrase_file,
+        branch_leaves, remote_conn, remote_base_path, excludes,
+        s3_key, S3_BUCKET, bag_size_bytes, upload_limit_mb, 
+        encryption_config
+    )
+    
+    # 9. Update inventory after successful upload
+    
+    commit_to_inventory(leaf_list, branch_leaves, inventory, is_live, bag_num, etag)
+
+
+def prepare_bag_info(bag_num, short_name, hostname):
+    """
+    Prepare bag filename and paths.
+    
+    Returns:
+        dict: Bag information including tar_name, tar_path, s3_key
+    """
     safe_prefix = short_name.replace(" ", "_")
     tar_name = f"{hostname}_{safe_prefix}_bag_{bag_num:05d}.tar"
     tar_path = os.path.join(STAGING_DIR, tar_name)
     s3_key = os.path.join(S3_PREFIX, tar_name)
     
-    # Standardized Label Formatting
-    bag_label_str = "  > Bag"
-    pad_width = STATUS_WIDTH + 2
-    
+    return {
+        "tar_name": tar_name,
+        "tar_path": tar_path,
+        "s3_key": s3_key
+    }
+
+
+def print_bag_header(bag_num, bag_size_bytes):
+    """Print the header for bag processing."""
     print(f"\n--- Leaf Bag {bag_num:05d} [{format_bytes(bag_size_bytes)}] ---")
 
-    # 1. Manifest Generation
+
+def generate_bag_manifest(tar_name, leaf_list, branch_root, is_live):
+    """Generate a manifest file for the bag contents."""
     manifest_leaves = []
     for leaf in leaf_list:
         if leaf['is_branch_root']:
             manifest_leaves.append({'path': branch_root, 'is_branch_root': True, 'files': leaf['files']})
         else:
             manifest_leaves.append({'path': leaf['path'], 'is_branch_root': False})
+    
     generate_real_manifest(tar_name, manifest_leaves, is_live)
 
-    # 2. Inventory Check
-    needs_upload = False
+
+def should_upload_bag(leaf_list, branch_leaves):
+    """
+    Check if any leaf in the bag needs to be uploaded.
+    
+    Returns:
+        bool: True if upload is needed, False otherwise
+    """
     for leaf in leaf_list:
         key = leaf['key']
         if branch_leaves.get(key, {}).get('needs_upload', True):
-            needs_upload = True
-            break
-    
-    if not needs_upload:
-        print(f"\n{bag_label_str:<{pad_width}}: {tar_name}")
-        print(f"  [SKIP] Inventory Match.")
-        branch_stats['skip_count'] += 1
-        branch_stats['skip_bytes'] += bag_size_bytes
-        return
+            return True
+    return False
 
+
+def update_skip_stats(branch_stats, bag_size_bytes):
+    """Update branch stats for skipped bags."""
+    branch_stats['skip_count'] += 1
+    branch_stats['skip_bytes'] += bag_size_bytes
+
+
+def print_skip_message(tar_name):
+    """Print a message for skipped bags."""
+    bag_label_str = "  > Bag"
+    pad_width = STATUS_WIDTH + 2
+    print(f"\n{bag_label_str:<{pad_width}}: {tar_name}")
+    print(f"  [SKIP] Inventory Match.")
+
+
+def update_upload_stats(branch_stats, bag_size_bytes):
+    """Update branch stats for bags that will be uploaded."""
     branch_stats['up_count'] += 1
     branch_stats['up_bytes'] += bag_size_bytes
-    
-    # Update inventory with new location
+
+
+def update_inventory_locations(leaf_list, branch_leaves, s3_key):
+    """Update inventory with expected S3 locations for all leaves in the bag."""
     for leaf in leaf_list:
         if leaf['key'] in branch_leaves:
             branch_leaves[leaf['key']]['archive_key'] = s3_key
 
-    if not is_live:
-        print(f"\n{bag_label_str:<{pad_width}}: {tar_name}")
-        print(f"  [DRY RUN] Would upload: s3://{S3_BUCKET}/{s3_key}")
-        return
 
-    # 3. BUILD ARCHIVE
-    cmd, temp_files_to_clean = construct_tar_command(tar_path, leaf_list, branch_root, designator, passphrase_file, branch_leaves, remote_conn, remote_base_path, excludes)
+def print_dry_run_message(tar_name, s3_key, s3_bucket):
+    """Print a message for dry run mode."""
+    bag_label_str = "  > Bag"
+    pad_width = STATUS_WIDTH + 2
+    print(f"\n{bag_label_str:<{pad_width}}: {tar_name}")
+    print(f"  [DRY RUN] Would upload: s3://{s3_bucket}/{s3_key}")
 
+
+def build_and_upload_bag(tar_path, leaf_list, branch_root, designator, passphrase_file,
+                        branch_leaves, remote_conn, remote_base_path, excludes,
+                        s3_key, s3_bucket, bag_size_bytes, upload_limit_mb, 
+                        encryption_config):
+    """Build the tar archive and upload it to S3."""
+    # 1. Ensure staging directory exists
+    if not os.path.exists(STAGING_DIR): 
+        os.makedirs(STAGING_DIR)
+    
+    # 2. Build tar archive
+    temp_files_to_clean = build_tar_archive(
+        tar_path, leaf_list, branch_root, designator, passphrase_file,
+        branch_leaves, remote_conn, remote_base_path, excludes, 
+        bag_size_bytes, encryption_config
+    )
+    
     try:
-        if not os.path.exists(STAGING_DIR): os.makedirs(STAGING_DIR)
+        # 3. Upload to S3
+        etag = upload_to_s3(
+            tar_path, s3_bucket, s3_key, bag_size_bytes, upload_limit_mb
+        )
         
-        # --- Heartbeat for Bag Assembly ---
-        # This is the SINGLE Header for this bag
-        print(f"\n{bag_label_str:<{pad_width}}: {tar_name}")
+        # 4. Log the upload
+        log_upload_success(s3_key, tar_path, etag)
         
-        hb = Heartbeat(tar_path, bag_size_bytes, status="DISK: TAR")
-        hb.start()
+        # 5. Cleanup
+        cleanup_files(tar_path, temp_files_to_clean)
         
-        try:
-            # Silence stdout so Heartbeat owns the screen
-            subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        except subprocess.CalledProcessError as e:
-            hb.stop()
-            hb.join()
-            print(f"\n[FATAL] Tar failed: {e.stderr.decode() if e.stderr else str(e)}")
-            raise e
-        finally:
-            hb.stop()
-            hb.join()
-        # ----------------------------------
+        return etag
         
-        # 4. UPLOAD
-        if upload_limit_mb > 0:
-            t_config = TransferConfig(max_bandwidth=upload_limit_mb * 1024 * 1024, max_concurrency=10, use_threads=True)
-        else:
-            t_config = TransferConfig(use_threads=True)
+    except Exception as e:
+        # Handle upload failure
+        print(f"[FATAL] {e}")
+        cleanup_files(tar_path, temp_files_to_clean)
+        sys.exit(1)
 
-        desc = "  " + "[NET: AWS]".ljust(STATUS_WIDTH)
 
+def build_tar_archive(tar_path, leaf_list, branch_root, designator, passphrase_file,
+                     branch_leaves, remote_conn, remote_base_path, excludes, 
+                     bag_size_bytes, encryption_config):
+    """Build the tar archive containing all leaves."""
+    cmd, temp_files_to_clean = construct_tar_command(
+        tar_path, 
+        leaf_list, 
+        branch_root, 
+        designator, 
+        passphrase_file, 
+        branch_leaves, 
+        remote_conn, 
+        remote_base_path, 
+        excludes, 
+        encryption_config
+    )
+
+    # Start heartbeat for progress display
+    bag_label_str = "  > Bag"
+    pad_width = STATUS_WIDTH + 2
+    print(f"\n{bag_label_str:<{pad_width}}: {os.path.basename(tar_path)}")
+    
+    hb = Heartbeat(tar_path, bag_size_bytes, status="DISK: TAR")
+    hb.start()
+    
+    try:
+        # Silence stdout so Heartbeat owns the screen
+        subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        return temp_files_to_clean
+    except subprocess.CalledProcessError as e:
+        hb.stop()
+        hb.join()
+        print(f"\n[FATAL] Tar failed: {e.stderr.decode() if e.stderr else str(e)}")
+        raise e
+    finally:
+        hb.stop()
+        hb.join()
+
+
+def upload_to_s3(tar_path, s3_bucket, s3_key, file_size, upload_limit_mb):
+    """
+    Upload the tar file to S3 with progress tracking.
+    
+    Returns:
+        str: ETag of the uploaded file
+    """
+    # Configure transfer settings
+    if upload_limit_mb > 0:
+        t_config = TransferConfig(max_bandwidth=upload_limit_mb * 1024 * 1024, max_concurrency=10, use_threads=True)
+    else:
+        t_config = TransferConfig(use_threads=True)
+
+    # Create progress display
+    desc = "  " + "[NET: AWS]".ljust(STATUS_WIDTH)
+    file_size = os.path.getsize(tar_path)
+    
+    with tqdm(
+        total=file_size,
+        unit='B',
+        unit_scale=True,
+        leave=True,
+        ncols=100,
+        bar_format="{desc}{percentage:5.1f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+    ) as pbar:
+        pbar.set_description(desc)
+        s3_client.upload_file(
+            tar_path, 
+            s3_bucket, 
+            s3_key, 
+            ExtraArgs={'StorageClass': 'DEEP_ARCHIVE'},
+            Config=t_config,
+            Callback=lambda bytes_transferred: pbar.update(bytes_transferred)
+        )
+    
+    # Verify upload and get ETag
+    print("")  # Spacer line
+    response = s3_client.head_object(Bucket=s3_bucket, Key=s3_key)
+    etag = response.get('ETag', '').replace('"', '')
+    
+    return etag
+
+
+def log_upload_success(s3_key, tar_path, etag):
+    """Log successful upload to the transaction log."""
+    try:
         file_size = os.path.getsize(tar_path)
-        with tqdm(
-            total=file_size,
-            unit='B',
-            unit_scale=True,
-            leave=True,
-            ncols=100,
-            # Ensure bar_format handles the colon cleanly
-            bar_format="{desc}{percentage:5.1f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
-        ) as pbar:
-            pbar.set_description(desc)
-            s3_client.upload_file(
-                tar_path, 
-                S3_BUCKET, 
-                s3_key, 
-                ExtraArgs={'StorageClass': 'DEEP_ARCHIVE'},
-                Config=t_config,
-                Callback=lambda bytes_transferred: pbar.update(bytes_transferred)
-            )
-
-        # 5. COMMIT SUCCESS
-        try:
-            print("") # Spacer line
-
-            response = s3_client.head_object(Bucket=S3_BUCKET, Key=s3_key)
-            etag = response.get('ETag', '').replace('"', '') 
-            
-            metadata = response.get('ResponseMetadata', {})
-            
-            log_aws_transaction(
-                action="UPLOAD", 
-                archive_key=s3_key, 
-                size_bytes=file_size, 
-                etag=etag, 
-                response_metadata=metadata,
-                aukive="UPL-STD"
-            )
-            
-        except Exception as e:
-            etag = "VERIFY_FAILED"
-            log_aws_transaction("VERIFY_FAILURE", s3_key, file_size, "N/A", {"Error": str(e)}, "ERR-VFY")
-
-        # Update local manifest/inventory
-        os.remove(tar_path)
-        for leaf in leaf_list:
-            key = leaf['key']
-            if key in branch_leaves:
-                branch_leaves[key]['needs_upload'] = False
-                branch_leaves[key]['last_upload'] = datetime.now().isoformat()
-                branch_leaves[key]['etag'] = etag 
-
-        if is_live:
-            try:
-                with open(INVENTORY_FILE, 'w') as f:
-                    json.dump(inventory, f, indent=4)
-                print(f"  [SAVE] Bag {bag_num:05d} committed to inventory.")
-            except Exception as e:
-                print(f"  [WARN] Failed to auto-save inventory: {e}")
-
+        response = s3_client.head_object(Bucket=S3_BUCKET, Key=s3_key)
+        metadata = response.get('ResponseMetadata', {})
+        
+        log_aws_transaction(
+            action="UPLOAD", 
+            archive_key=s3_key, 
+            size_bytes=file_size, 
+            etag=etag, 
+            response_metadata=metadata,
+            aukive="UPL-STD"
+        )
+        
         timestamp = datetime.now().strftime("%H:%M:%S")
         print(f"  [OK] {timestamp} | Verified ETag: {etag}")
-
-
+        
     except Exception as e:
-        print(f"[FATAL] {e}")
-        sys.exit(1)
-    
-    finally:
-        # 6. CLEANUP
-        for f in temp_files_to_clean:
-            if os.path.exists(f):
-                os.remove(f)
+        etag = "VERIFY_FAILED"
+        log_aws_transaction(
+            "VERIFY_FAILURE", 
+            s3_key, 
+            os.path.getsize(tar_path), 
+            "N/A", 
+            {"Error": str(e)}, 
+            "ERR-VFY"
+        )
 
-def process_branch(branch_line, inventory, run_stats, is_live, upload_limit_mb, is_repack, passphrase_file):
+
+def cleanup_files(tar_path, temp_files_to_clean):
+    """Clean up temporary files after upload."""
+    # Remove the tar file
+    if os.path.exists(tar_path):
+        os.remove(tar_path)
+    
+    # Remove all temporary files
+    for f in temp_files_to_clean:
+        if os.path.exists(f):
+            os.remove(f)
+
+def commit_to_inventory(leaf_list, branch_leaves, inventory, is_live, bag_num, etag=None):
+    """Update inventory with successful upload information."""
+    # Update local manifest/inventory
+    for leaf in leaf_list:
+        key = leaf['key']
+        if key in branch_leaves:
+            branch_leaves[key]['needs_upload'] = False
+            branch_leaves[key]['last_upload'] = datetime.now().isoformat()
+            branch_leaves[key]['etag'] = etag  # etag needs to be passed in or returned from upload_to_s3
+
+    # Save inventory to disk
+    if is_live:
+        try:
+            with open(INVENTORY_FILE, 'w') as f:
+                json.dump(inventory, f, indent=4)
+            print(f"  [SAVE] Bag {bag_num:05d} committed to inventory.")
+        except Exception as e:
+            print(f"  [WARN] Failed to auto-save inventory: {e}")
+
+
+# --- PROCESS_BRANCH START ---
+
+def process_branch(branch_line, inventory, run_stats, is_live, upload_limit_mb, is_repack, passphrase_file, encryption_config=None):
     """Handles parsing types (MUTABLE, IMMUTABLE), mounting, and processing."""
     
-    # --- UPDATED PARSING LOGIC (Supports multiple tags) ---
+    # Parse branch info
+    branch_path, full_tags, logic_type, branch_excludes = parse_branch_line(branch_line)
+    
+    # Initialize stats
+    run_stats[branch_line] = {'up_count': 0, 'up_bytes': 0, 'skip_count': 0, 'skip_bytes': 0}
+    branch_stats = run_stats[branch_line]
+
+    mount_point_to_cleanup = None
+    try:
+        scan_path, mount_point_to_cleanup = mount_remote_branch(branch_path)
+        
+        if not os.path.exists(scan_path):
+            print(f"[ERROR] Path not found: {scan_path}")
+            return
+
+        # Extract path and hostname information
+        short_name, hostname, remote_conn, remote_base_path = get_branch_path_info(branch_path, scan_path)
+
+        # Print branch processing header
+        print_branch_header(branch_path, full_tags)
+
+        # Initialize branch in inventory if needed
+        if branch_line not in inventory["branches"]:
+            inventory["branches"][branch_line] = {"leaves": {}}
+        branch_leaves = inventory["branches"][branch_line]["leaves"]
+
+        # Identify leaves based on logic type
+        found_leaves = identify_leaves(logic_type, scan_path, branch_excludes)
+        if found_leaves is None:
+            return
+
+        # Scan metadata and update inventory
+        leaves_to_bag = scan_and_update_inventory(found_leaves, branch_leaves, is_repack)
+
+        # Assign bags to leaves
+        bag_counter = assign_bags_to_leaves(leaves_to_bag, inventory, branch_leaves, is_repack)
+
+        # Group by bag ID
+        bags = group_leaves_by_bag(leaves_to_bag)
+
+        # Calculate waste and financial metrics
+        calculate_branch_metrics(branch_stats, bags, leaves_to_bag, is_repack, is_live)
+
+        # Execute bag processing
+        process_branch_bags(bags, scan_path, short_name, is_live, branch_leaves, hostname, 
+                          branch_stats, upload_limit_mb, full_tags, passphrase_file, 
+                          remote_conn, remote_base_path, inventory, branch_excludes, 
+                          encryption_config)
+
+        # Handle repack cleanup if needed
+        if is_repack and is_live:
+            handle_repack_cleanup(hostname, short_name, bag_counter, s3_client, S3_BUCKET, S3_PREFIX)
+
+        # Update branch scan timestamp
+        if branch_line in inventory["branches"]:
+            inventory["branches"][branch_line]["last_scan"] = datetime.now().isoformat()
+
+    finally:
+        if mount_point_to_cleanup:
+            unmount_remote_branch(mount_point_to_cleanup)
+
+
+def parse_branch_line(branch_line):
+    """Parse branch line to extract path, tags, logic type, and excludes."""
     full_tags = "MUTABLE"
     logic_type = "MUTABLE"
     branch_excludes = [] 
@@ -751,289 +1107,302 @@ def process_branch(branch_line, inventory, run_stats, is_live, upload_limit_mb, 
         branch_path = branch_line.strip()
         full_tags = "MUTABLE"
         logic_type = "MUTABLE"
-
-    # ------------------------------------------------------
-
-    run_stats[branch_line] = {'up_count': 0, 'up_bytes': 0, 'skip_count': 0, 'skip_bytes': 0}
-    branch_stats = run_stats[branch_line]
-
-    mount_point_to_cleanup = None
-    try:
-        scan_path, mount_point_to_cleanup = mount_remote_branch(branch_path)
         
-        if not os.path.exists(scan_path):
-            print(f"[ERROR] Path not found: {scan_path}")
-            return
+    return branch_path, full_tags, logic_type, branch_excludes
 
-        short_name = os.path.basename(os.path.normpath(scan_path))
-        if ":" in branch_path:
-            remote_conn, remote_base_path = branch_path.split(":", 1)
-            hostname = remote_conn.split("@")[-1]
+
+def get_branch_path_info(branch_path, scan_path):
+    """Extract path and hostname information from a branch path."""
+    short_name = os.path.basename(os.path.normpath(scan_path))
+    
+    if ":" in branch_path:
+        remote_conn, remote_base_path = branch_path.split(":", 1)
+        hostname = remote_conn.split("@")[-1]
+    else:
+        remote_conn = None
+        remote_base_path = None
+        hostname = socket.gethostname()
+        
+    return short_name, hostname, remote_conn, remote_base_path
+
+
+def print_branch_header(branch_path, full_tags):
+    """Print a formatted header for branch processing."""
+    print(f"------------------------------------------------")
+    print(f"Processing [{full_tags}]:")
+    print(f"  {branch_path}") 
+    print(f"------------------------------------------------")
+
+
+def identify_leaves(logic_type, scan_path, branch_excludes):
+    """Identify leaves based on the logic type (MUTABLE or IMMUTABLE)."""
+    found_leaves = []
+
+    if logic_type == "IMMUTABLE":
+        # Sovereign Storage: The entire path is a single Leaf.
+        found_leaves.append({
+            "key": scan_path, "path": scan_path, "is_branch_root": False, "files": []
+        })
+        
+    elif logic_type == "MUTABLE":
+        # Shared Storage: Every sub-directory is a unique Leaf.
+        try:
+            # Filter subdirs immediately
+            subdirs = [d for d in sorted(os.listdir(scan_path)) 
+                       if os.path.isdir(os.path.join(scan_path, d)) 
+                       and d not in branch_excludes]
+
+            for d in subdirs:
+                full_p = os.path.join(scan_path, d)
+                found_leaves.append({
+                    "key": full_p, "path": full_p, "is_branch_root": False, "files": []
+                })
+            
+            # Filter loose files immediately
+            loose_files = [f for f in sorted(os.listdir(scan_path)) 
+                           if os.path.isfile(os.path.join(scan_path, f))
+                           and f not in branch_excludes]
+
+            if loose_files:
+                cluster_key = os.path.join(scan_path, "__BRANCH_ROOT__")
+                found_leaves.append({
+                    "key": cluster_key, "path": scan_path, "is_branch_root": True, "files": loose_files
+                })
+        except OSError as e:
+            print(f"[ERROR] Could not scan directory {scan_path}: {e}")
+            return None
+    else:
+        print(f"[ERROR] Unknown logic type derived from branch: {logic_type}")
+        return None
+        
+    return found_leaves
+
+
+def scan_and_update_inventory(found_leaves, branch_leaves, is_repack):
+    """Scan metadata for leaves and update the inventory."""
+    leaves_to_bag = []
+
+    for leaf in found_leaves:
+        if leaf['is_branch_root']:
+            current_hash, size = get_metadata_hash(leaf['path'], recursive=False, file_list=leaf['files'])
         else:
-            remote_conn = None
-            remote_base_path = None
-            hostname = socket.gethostname()
+            current_hash, size = get_metadata_hash(leaf['path'], recursive=True)
 
-        print(f"------------------------------------------------")
-        print(f"Processing [{full_tags}]:")
-        print(f"  {branch_path}") 
-        print(f"------------------------------------------------")
-
-        if branch_line not in inventory["branches"]:
-            inventory["branches"][branch_line] = {"leaves": {}}
-        branch_leaves = inventory["branches"][branch_line]["leaves"]
-
-        # 2. IDENTIFY LEAVES BASED ON LOGIC TYPE
-        found_leaves = [] 
-
-        if logic_type == "IMMUTABLE":
-            # Sovereign Storage: The entire path is a single Leaf.
-            found_leaves.append({
-                "key": scan_path, "path": scan_path, "is_branch_root": False, "files": []
-            })
-            
-        elif logic_type == "MUTABLE":
-            # Shared Storage: Every sub-directory is a unique Leaf.
-            try:
-                # [NEW LOGIC] Filter subdirs immediately
-                subdirs = [d for d in sorted(os.listdir(scan_path)) 
-                           if os.path.isdir(os.path.join(scan_path, d)) 
-                           and d not in branch_excludes] # <--- Filter
-
-                for d in subdirs:
-                    full_p = os.path.join(scan_path, d)
-                    found_leaves.append({
-                        "key": full_p, "path": full_p, "is_branch_root": False, "files": []
-                    })
-                
-                # [NEW LOGIC] Filter loose files immediately
-                loose_files = [f for f in sorted(os.listdir(scan_path)) 
-                               if os.path.isfile(os.path.join(scan_path, f))
-                               and f not in branch_excludes] # <--- Filter
-
-                if loose_files:
-                    cluster_key = os.path.join(scan_path, "__BRANCH_ROOT__")
-                    found_leaves.append({
-                        "key": cluster_key, "path": scan_path, "is_branch_root": True, "files": loose_files
-                    })
-            except OSError as e:
-                print(f"[ERROR] Could not scan directory {scan_path}: {e}")
-                return
-        else:
-            print(f"[ERROR] Unknown logic type derived from branch: {branch_line}")
-            return
-
-        # 3. SCAN METADATA & UPDATE INVENTORY
-        leaves_to_bag = [] 
-
-        for leaf in found_leaves:
-            if leaf['is_branch_root']:
-                current_hash, size = get_metadata_hash(leaf['path'], recursive=False, file_list=leaf['files'])
-            else:
-                current_hash, size = get_metadata_hash(leaf['path'], recursive=True)
-
-            entry = branch_leaves.get(leaf['key'], {})
-            
-            existing_tid = entry.get("tar_id", None)
-            existing_key = entry.get("archive_key", None)
-            
-            is_changed = entry.get("last_metadata_hash") != current_hash
-            
-            if is_repack:
-                needs_upload = True
-            else:
-                needs_upload = is_changed or entry.get("needs_upload", True)
-
-            archive_key = existing_key if not is_changed else None
-
-            branch_leaves[leaf['key']] = {
-                "last_metadata_hash": current_hash,
-                "needs_upload": needs_upload,
-                "size_bytes": size,
-                "size_human": format_bytes(size),
-                "tar_id": existing_tid, 
-                "archive_key": archive_key,
-                "last_upload": entry.get("last_upload", None)
-            }
-            
-            leaf_data = leaf.copy()
-            leaf_data.update({"size": size, "tar_id": existing_tid})
-            leaves_to_bag.append(leaf_data)
-
-        # 4. ASSIGN BAGS
+        entry = branch_leaves.get(leaf['key'], {})
+        
+        existing_tid = entry.get("tar_id", None)
+        existing_key = entry.get("archive_key", None)
+        
+        is_changed = entry.get("last_metadata_hash") != current_hash
+        
         if is_repack:
-            print("  [REPACK] Ignoring existing leaf bag IDs. Consolidating all leaves...")
-            # If repacking, we treat every leaf as if it has no seat assignment
-            for leaf in leaves_to_bag:
-                leaf["tar_id"] = None
-            bag_counter = 1
+            needs_upload = True
         else:
-            # GLOBAL COUNTER MODE: Find the highest bag number in the ENTIRE inventory
-            existing_bag_nums = []
-            for branch_data in inventory["branches"].values():
-                for unit in branch_data.get("leaves", {}).values():
-                    tid = unit.get('tar_id')
-                    if tid and tid.startswith('bag_'):
-                        try:
-                            existing_bag_nums.append(int(tid.split('_')[-1]))
-                        except ValueError: pass
-            
-            bag_counter = max(existing_bag_nums) if existing_bag_nums else 0
-            
-            # If this specific branch already has bags, we might be continuing its last bag
-            # or starting a brand new one. Let's find THIS branch's highest bag.
-            branch_bag_nums = []
-            for unit in branch_leaves.values():
+            needs_upload = is_changed or entry.get("needs_upload", True)
+
+        archive_key = existing_key if not is_changed else None
+
+        branch_leaves[leaf['key']] = {
+            "last_metadata_hash": current_hash,
+            "needs_upload": needs_upload,
+            "size_bytes": size,
+            "size_human": format_bytes(size),
+            "tar_id": existing_tid, 
+            "archive_key": archive_key,
+            "last_upload": entry.get("last_upload", None)
+        }
+        
+        leaf_data = leaf.copy()
+        leaf_data.update({"size": size, "tar_id": existing_tid})
+        leaves_to_bag.append(leaf_data)
+        
+    return leaves_to_bag
+
+
+def assign_bags_to_leaves(leaves_to_bag, inventory, branch_leaves, is_repack):
+    """Assign bags to leaves based on repack status and size."""
+    if is_repack:
+        print("  [REPACK] Ignoring existing leaf bag IDs. Consolidating all leaves...")
+        # If repacking, we treat every leaf as if it has no seat assignment
+        for leaf in leaves_to_bag:
+            leaf["tar_id"] = None
+        bag_counter = 1
+    else:
+        # Find the highest bag number in the ENTIRE inventory
+        existing_bag_nums = []
+        for branch_data in inventory["branches"].values():
+            for unit in branch_data.get("leaves", {}).values():
                 tid = unit.get('tar_id')
                 if tid and tid.startswith('bag_'):
                     try:
-                        branch_bag_nums.append(int(tid.split('_')[-1]))
+                        existing_bag_nums.append(int(tid.split('_')[-1]))
                     except ValueError: pass
-            
-            if not branch_bag_nums:
-                # This branch has never been backed up, so it gets the NEXT global number
-                bag_counter += 1
-            else:
-                # This branch exists; we continue from its own highest bag
-                bag_counter = max(branch_bag_nums)
-
-        current_bag_size = 0
         
-        # In standard mode, calculate how much is already in the last bag
-        if not is_repack:
-            last_bag_id = f"bag_{bag_counter:05d}"
-            for unit in branch_leaves.values():
-                if unit.get('tar_id') == last_bag_id:
-                    current_bag_size += unit.get('size_bytes', 0)
-
-        for leaf in leaves_to_bag:
-            # If not repacking, respect the "Reserved Seat"
-            if not is_repack and leaf["tar_id"]:
-                continue 
-            
-            # Logic for assigning to a bag (new leaves or ALL leaves if repacking)
-            if (current_bag_size + leaf["size"] > TARGET_SIZE_BYTES) and current_bag_size > 0:
-                bag_counter += 1
-                current_bag_size = 0
-            
-            new_tid = f"bag_{bag_counter:05d}"
-            leaf["tar_id"] = new_tid
-            current_bag_size += leaf["size"]
-            
-            # Update the inventory brain
-            branch_leaves[leaf["key"]]["tar_id"] = new_tid
-
-        # 5. GROUP BY BAG ID
-        bags = {}
-        for leaf in leaves_to_bag:
-            tid = leaf["tar_id"]
-            if tid not in bags:
+        bag_counter = max(existing_bag_nums) if existing_bag_nums else 0
+        
+        # If this specific branch already has bags, find this branch's highest bag
+        branch_bag_nums = []
+        for unit in branch_leaves.values():
+            tid = unit.get('tar_id')
+            if tid and tid.startswith('bag_'):
                 try:
-                    b_num = int(tid.split('_')[-1])
-                except (ValueError, AttributeError):
-                    b_num = 0
-                
-                bags[tid] = {"leaves": [], "size": 0, "bag_num_int": b_num}
-            
-            bags[tid]["leaves"].append(leaf)
-            bags[tid]["size"] += leaf["size"]
-
-        # --- WASTE & COST REPORT CALCULATION ---
-        # Load pricing from config but fallback to default
-        price_gb = float(config['pricing'].get('price_per_gb_month', 0.00099))
-        min_days = int(config['pricing'].get('min_retention_days', 180))
+                    branch_bag_nums.append(int(tid.split('_')[-1]))
+                except ValueError: pass
         
-        total_data_in_branch = sum(leaf["size"] for leaf in leaves_to_bag)
-        num_bags_in_branch = len(bags)
-        total_capacity = num_bags_in_branch * TARGET_SIZE_BYTES
+        if not branch_bag_nums:
+            # This branch has never been backed up, so it gets the NEXT global number
+            bag_counter += 1
+        else:
+            # This branch exists; we continue from its own highest bag
+            bag_counter = max(branch_bag_nums)
+
+    current_bag_size = 0
+    
+    # In standard mode, calculate how much is already in the last bag
+    if not is_repack:
+        last_bag_id = f"bag_{bag_counter:05d}"
+        for unit in branch_leaves.values():
+            if unit.get('tar_id') == last_bag_id:
+                current_bag_size += unit.get('size_bytes', 0)
+
+    for leaf in leaves_to_bag:
+        # If not repacking, respect the "Reserved Seat"
+        if not is_repack and leaf["tar_id"]:
+            continue 
         
-        waste_bytes = total_capacity - total_data_in_branch
-        waste_percent = (waste_bytes / total_capacity * 100) if total_capacity > 0 else 0
+        # Logic for assigning to a bag (new leaves or ALL leaves if repacking)
+        if (current_bag_size + leaf["size"] > TARGET_SIZE_BYTES) and current_bag_size > 0:
+            bag_counter += 1
+            current_bag_size = 0
+        
+        new_tid = f"bag_{bag_counter:05d}"
+        leaf["tar_id"] = new_tid
+        current_bag_size += leaf["size"]
+        
+        # Update the inventory brain
+        branch_leaves[leaf["key"]]["tar_id"] = new_tid
+        
+    return bag_counter
 
-        # Calculate "At-Risk" Deletion Fees
-        at_risk_fee = (total_data_in_branch / BYTES_PER_GB) * price_gb * (min_days / 30)
 
-        branch_stats['waste_bytes'] = waste_bytes
-        branch_stats['waste_percent'] = waste_percent
-        branch_stats['total_bags'] = num_bags_in_branch
-        branch_stats['at_risk_fee'] = at_risk_fee
-
-        if is_repack:
-            print(f"  [REPACK REPORT] Potential Waste Saved: {format_bytes(waste_bytes)}")
-            if is_live:
-                print(f"  [FINANCIAL WARNING] This repack could trigger ~${at_risk_fee:.2f} in early deletion fees.")
-
-        # 6. EXECUTE BAGS
-        sorted_bag_ids = sorted(bags.keys(), key=lambda x: bags[x]["bag_num_int"])
-
-        for tid in sorted_bag_ids:
-            bag_data = bags[tid]
-            process_bag(
-                bag_data["bag_num_int"], 
-                bag_data["leaves"], 
-                scan_path, 
-                short_name, 
-                bag_data["size"], 
-                is_live, 
-                branch_leaves,
-                hostname,
-                branch_stats,
-                upload_limit_mb,
-                full_tags,
-                passphrase_file,
-                remote_conn,
-                remote_base_path,
-                inventory,
-                branch_excludes
-            )
-
-        if is_repack and is_live:
-            print(f"  [CLEANUP] Checking for orphaned tail bags on S3...")
+def group_leaves_by_bag(leaves_to_bag):
+    """Group leaves by bag ID for processing."""
+    bags = {}
+    for leaf in leaves_to_bag:
+        tid = leaf["tar_id"]
+        if tid not in bags:
+            try:
+                b_num = int(tid.split('_')[-1])
+            except (ValueError, AttributeError):
+                b_num = 0
             
-            # Construct the specific prefix for THIS branch's bags
-            # Pattern: 2026-backup/hostname_shortname_bag_
-            branch_bag_prefix = f"{hostname}_{safe_prefix}_bag_"
-            s3_search_prefix = os.path.join(S3_PREFIX, branch_bag_prefix)
-            
-            # List what is actually on S3
-            found_orphans = []
-            paginator = s3_client.get_paginator('list_objects_v2')
-            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=s3_search_prefix):
-                for obj in page.get('Contents', []):
-                    key = obj['Key']
-                    # Verify it matches our strict pattern to avoid deleting wrong files
-                    if key.endswith(".tar") and branch_bag_prefix in key:
-                        try:
-                            # Extract number: ..._bag_00008.tar -> 8
-                            fname = os.path.basename(key)
-                            num_part = fname.replace(branch_bag_prefix, "").replace(".tar", "")
-                            bag_num = int(num_part)
-                            
-                            # If this number is higher than our current counter, it's a tail orphan
-                            if bag_num > bag_counter:
-                                found_orphans.append(key)
-                        except ValueError:
-                            continue
+            bags[tid] = {"leaves": [], "size": 0, "bag_num_int": b_num}
+        
+        bags[tid]["leaves"].append(leaf)
+        bags[tid]["size"] += leaf["size"]
+        
+    return bags
 
-            if found_orphans:
-                print(f"  [CLEANUP] Found {len(found_orphans)} obsolete leaf bags. Deleting...")
-                for orphan in found_orphans:
-                    try:
-                        print(f"  [S3 DELETE] {orphan}")
-                        response = s3_client.delete_object(Bucket=S3_BUCKET, Key=orphan)
-                        log_aws_transaction("DELETE_REPACK", orphan, 0, "N/A", response.get('ResponseMetadata', {}), "DEL-RPK")
-                    except Exception as e:
-                        print(f"  [WARN] Failed to delete {orphan}: {e}")
-            else:
-                print(f"  [CLEANUP] No orphans found.")
 
-        # We store this at the Branch Level, distinct from Leaf Uploads
-        if branch_line in inventory["branches"]:
-            inventory["branches"][branch_line]["last_scan"] = datetime.now().isoformat()
+def calculate_branch_metrics(branch_stats, bags, leaves_to_bag, is_repack, is_live):
+    """Calculate waste and financial metrics for the branch."""
+    # Load pricing from config but fallback to default
+    price_gb = float(config['pricing'].get('price_per_gb_month', 0.00099))
+    min_days = int(config['pricing'].get('min_retention_days', 180))
+    
+    total_data_in_branch = sum(leaf["size"] for leaf in leaves_to_bag)
+    num_bags_in_branch = len(bags)
+    total_capacity = num_bags_in_branch * TARGET_SIZE_BYTES
+    
+    waste_bytes = total_capacity - total_data_in_branch
+    waste_percent = (waste_bytes / total_capacity * 100) if total_capacity > 0 else 0
 
-    finally:
-        if mount_point_to_cleanup:
-            unmount_remote_branch(mount_point_to_cleanup)
+    # Calculate "At-Risk" Deletion Fees
+    at_risk_fee = (total_data_in_branch / BYTES_PER_GB) * price_gb * (min_days / 30)
+
+    branch_stats['waste_bytes'] = waste_bytes
+    branch_stats['waste_percent'] = waste_percent
+    branch_stats['total_bags'] = num_bags_in_branch
+    branch_stats['at_risk_fee'] = at_risk_fee
+
+    if is_repack:
+        print(f"  [REPACK REPORT] Potential Waste Saved: {format_bytes(waste_bytes)}")
+        if is_live:
+            print(f"  [FINANCIAL WARNING] This repack could trigger ~${at_risk_fee:.2f} in early deletion fees.")
+
+
+def process_branch_bags(bags, scan_path, short_name, is_live, branch_leaves, hostname, 
+                       branch_stats, upload_limit_mb, full_tags, passphrase_file, 
+                       remote_conn, remote_base_path, inventory, branch_excludes, 
+                       encryption_config):
+    """Process each bag in the branch."""
+    sorted_bag_ids = sorted(bags.keys(), key=lambda x: bags[x]["bag_num_int"])
+    safe_prefix = short_name.replace(" ", "_")
+
+    for tid in sorted_bag_ids:
+        bag_data = bags[tid]
+        process_bag(
+            bag_data["bag_num_int"], 
+            bag_data["leaves"], 
+            scan_path, 
+            short_name, 
+            bag_data["size"], 
+            is_live, 
+            branch_leaves,
+            hostname,
+            branch_stats,
+            upload_limit_mb,
+            full_tags,
+            passphrase_file,
+            remote_conn,
+            remote_base_path,
+            inventory,
+            branch_excludes,
+            encryption_config
+        )
+
+
+def handle_repack_cleanup(hostname, safe_prefix, bag_counter, s3_client, S3_BUCKET, S3_PREFIX):
+    """Clean up orphaned tail bags after a repack operation."""
+    print(f"  [CLEANUP] Checking for orphaned tail bags on S3...")
+    
+    # Construct the specific prefix for THIS branch's bags
+    branch_bag_prefix = f"{hostname}_{safe_prefix}_bag_"
+    s3_search_prefix = os.path.join(S3_PREFIX, branch_bag_prefix)
+    
+    # List what is actually on S3
+    found_orphans = []
+    paginator = s3_client.get_paginator('list_objects_v2')
+    for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=s3_search_prefix):
+        for obj in page.get('Contents', []):
+            key = obj['Key']
+            # Verify it matches our strict pattern to avoid deleting wrong files
+            if key.endswith(".tar") and branch_bag_prefix in key:
+                try:
+                    # Extract number: ..._bag_00008.tar -> 8
+                    fname = os.path.basename(key)
+                    num_part = fname.replace(branch_bag_prefix, "").replace(".tar", "")
+                    bag_num = int(num_part)
+                    
+                    # If this number is higher than our current counter, it's a tail orphan
+                    if bag_num > bag_counter:
+                        found_orphans.append(key)
+                except ValueError:
+                    continue
+
+    if found_orphans:
+        print(f"  [CLEANUP] Found {len(found_orphans)} obsolete leaf bags. Deleting...")
+        for orphan in found_orphans:
+            try:
+                print(f"  [S3 DELETE] {orphan}")
+                response = s3_client.delete_object(Bucket=S3_BUCKET, Key=orphan)
+                log_aws_transaction("DELETE_REPACK", orphan, 0, "N/A", response.get('ResponseMetadata', {}), "DEL-RPK")
+            except Exception as e:
+                print(f"  [WARN] Failed to delete {orphan}: {e}")
+    else:
+        print(f"  [CLEANUP] No orphans found.")
+
+# --- PROCESS_BRANCH END ---
 
 def generate_full_report(inventory, config):
     print("\n" + "="*105)
@@ -1268,133 +1637,9 @@ def check_compression_needed(line_metadata):
     """Returns True if the COMPRESS tag is present in the branch line."""
     return "COMPRESS" in line_metadata
 
-def compress_leaf(leaf_path, files=None, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0):
-    """Creates a temporary .tar.gz of a leaf, using rsync if remote_conn is provided."""
-    leaf_id = hashlib.md5(leaf_path.encode()).hexdigest()[:8]
-    compressed_path = os.path.join(STAGING_DIR, f"comp_{leaf_id}.tar.gz")
-    
-    local_raw = None
-    target_path = leaf_path
-    parent = os.path.dirname(leaf_path)
-    base = os.path.basename(leaf_path)
-
-    # Hybrid logic: Sync locally if remote
-    if remote_conn and not files: 
-        try:
-            # Create a dedicated staging subdirectory for this specific leaf
-            leaf_stage_dir = os.path.join(STAGING_DIR, f"stage_{leaf_id}")
-            if not os.path.exists(leaf_stage_dir): 
-                os.makedirs(leaf_stage_dir)
-            
-            # Use MNT_BASE from your config
-            if stage_remote_leaf(remote_conn, remote_base_path, leaf_path, local_branch_root, leaf_stage_dir, expected_size=expected_size):
-                # SUCCESS: local_raw is now the directory we need to clean up later
-                local_raw = leaf_stage_dir
-                target_path = local_raw
-                parent = os.path.dirname(local_raw)
-                base = os.path.basename(local_raw)
-            else:
-                return None
-        except Exception as e:
-            print(f"[ERROR] Local staging failed for {leaf_path}: {e}")
-            return None
-
-    # Processing (Now at local SSD speeds if staged)
-    if files:
-        files_list = " ".join([shlex.quote(f) for f in files])
-        cmd = f"tar -C {shlex.quote(leaf_path)} -czf {shlex.quote(compressed_path)} {files_list}"
-    else:
-        cmd = f"tar -C {shlex.quote(parent)} -czf {shlex.quote(compressed_path)} {shlex.quote(base)}"
-
-    # 2. Start the Heartbeat
-    hb = Heartbeat(compressed_path, expected_size, status="DISK: TAR")
-    hb.start()    
-        
-    try:
-        subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        return compressed_path
-    except subprocess.CalledProcessError:
-        print(f"\n    [ERROR] Compression failed: {e}")
-        return None
-    finally:
-        hb.stop()
-        hb.join()
-        if local_raw and os.path.exists(local_raw):
-            shutil.rmtree(local_raw)
-
 def check_encryption_needed(line_metadata):
     """Returns True if the ENCRYPT tag is present in the branch line."""
     return "ENCRYPT" in line_metadata
-
-def encrypt_leaf(leaf_path, files=None, passphrase_file=None, compress=False, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0):
-    if not passphrase_file: return None
-    leaf_id = hashlib.md5(leaf_path.encode()).hexdigest()[:8]
-    
-    local_raw = None
-    target_path = leaf_path
-    parent = os.path.dirname(leaf_path)
-    base = os.path.basename(leaf_path)
-
-    if remote_conn and not files:
-        try:
-            leaf_stage_dir = os.path.join(STAGING_DIR, f"stage_{leaf_id}")
-            if not os.path.exists(leaf_stage_dir): 
-                os.makedirs(leaf_stage_dir)
-
-            if stage_remote_leaf(remote_conn, remote_base_path, leaf_path, local_branch_root, leaf_stage_dir, expected_size=expected_size):
-                local_raw = leaf_stage_dir
-                target_path = local_raw
-                parent = os.path.dirname(local_raw)
-                base = os.path.basename(local_raw)
-            else:
-                return None
-        except Exception as e:
-            print(f"[ERROR] Local staging failed for {leaf_path}: {e}")
-            return None
-
-    # 1. Prepare intermediate file
-    tar_flags = "-czf" if compress else "-cf"
-    ext = ".tar.gz" if compress else ".tar"
-    intermediate_file = os.path.join(STAGING_DIR, f"bundle_{leaf_id}{ext}")
-    
-    if files:
-        files_list = " ".join([shlex.quote(f) for f in files])
-        tar_cmd = f"tar -C {shlex.quote(leaf_path)} {tar_flags} {shlex.quote(intermediate_file)} {files_list}"
-    else:
-        tar_cmd = f"tar -C {shlex.quote(parent)} {tar_flags} {shlex.quote(intermediate_file)} {shlex.quote(base)}"
-    
-    # 2. Encrypt
-    encrypted_path = os.path.join(STAGING_DIR, f"enc_{leaf_id}.gpg")
-    gpg_cmd = ["gpg", "--batch", "--yes", "--passphrase-file", passphrase_file,
-               "--symmetric", "--cipher-algo", "AES256", "--output", encrypted_path, intermediate_file]
-
-    # 1. Start the Heartbeat watching the TAR file (intermediate_file)
-    # This ensures progress shows up IMMEDIATELY during phase 1.
-    hb = Heartbeat(intermediate_file, expected_size, status="CPU: GPG")
-    hb.start()
-
-    try:
-        # PHASE 1: Create the Tarball
-        # Change capture_output to DEVNULL/PIPE to avoid terminal buffering
-        subprocess.run(tar_cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    
-        # PHASE 2: Switch the Heartbeat to watch the GPG file
-        # Also tell it we are now in the compressed phase for accurate % calculation
-        hb.update_target(encrypted_path, new_status="CPU: GPG", is_compressed=True)
-
-        subprocess.run(gpg_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        return encrypted_path
-        
-    except subprocess.CalledProcessError:
-        return None
-
-    finally:
-        hb.stop()
-        hb.join()
-        if os.path.exists(intermediate_file): 
-            os.remove(intermediate_file)
-        if local_raw and os.path.exists(local_raw): 
-            shutil.rmtree(local_raw)
 
 def validate_encryption_config(tree_file):
     """
@@ -1425,6 +1670,282 @@ def validate_encryption_config(tree_file):
             sys.exit(1)
 
     return passphrase_file if needs_crypto else None
+
+# --- Shared Helper Functions ---
+
+def prepare_staging_environment(leaf_path, leaf_id, files=None, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0):
+    """
+    Prepare the staging environment for a leaf, including remote sync if needed.
+    
+    Args:
+        leaf_path: Path to the leaf
+        leaf_id: Unique ID for the leaf
+        files: Specific files to include (for branch_root leaves)
+        remote_conn: Remote connection string (if remote)
+        remote_base_path: Base path on remote system
+        local_branch_root: Root directory of the branch
+        expected_size: Expected size of the leaf in bytes
+    
+    Returns:
+        dict: Staging information including target_path, parent, base, and local_raw
+    """
+    local_raw = None
+    target_path = leaf_path
+    parent = os.path.dirname(leaf_path)
+    base = os.path.basename(leaf_path)
+
+    # Only process remote fetching if we're not dealing with specific files
+    # and we have a remote connection
+    if remote_conn and not files:
+        try:
+            # Create a dedicated staging subdirectory for this specific leaf
+            leaf_stage_dir = os.path.join(STAGING_DIR, f"stage_{leaf_id}")
+            if not os.path.exists(leaf_stage_dir):
+                os.makedirs(leaf_stage_dir)
+            
+            # Sync remote data to local staging
+            if stage_remote_leaf(
+                remote_conn, remote_base_path, leaf_path, 
+                local_branch_root, leaf_stage_dir, 
+                expected_size=expected_size
+            ):
+                # SUCCESS: local_raw is now the directory we need to clean up later
+                local_raw = leaf_stage_dir
+                target_path = local_raw
+                parent = os.path.dirname(local_raw)
+                base = os.path.basename(local_raw)
+            else:
+                # Failed to sync, clean up and return None
+                if os.path.exists(leaf_stage_dir):
+                    shutil.rmtree(leaf_stage_dir)
+                return None
+        except Exception as e:
+            print(f"[ERROR] Local staging failed for {leaf_path}: {e}")
+            return None
+
+    return {
+        "target_path": target_path,
+        "parent": parent,
+        "base": base,
+        "local_raw": local_raw
+    }
+
+
+def run_with_heartbeat(cmd, output_path, expected_size, status, shell=True, is_dir=False):
+    """
+    Run a command with heartbeat progress monitoring.
+    
+    Args:
+        cmd: Command to run (string or list)
+        output_path: Path to watch for progress
+        expected_size: Expected final size in bytes
+        status: Status label for heartbeat
+        shell: Whether to run command in shell
+        is_dir: Whether output_path is a directory
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Initialize heartbeat for progress display
+    hb = Heartbeat(output_path, expected_size, status=status, is_dir=is_dir)
+    hb.start()
+    
+    try:
+        if shell and isinstance(cmd, list):
+            cmd = " ".join(cmd)
+        
+        # Run the command, capturing errors but not output
+        subprocess.run(
+            cmd, 
+            shell=shell, 
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.decode() if e.stderr else str(e)
+        print(f"\n    [ERROR] Command failed: {error_msg}")
+        return False
+    finally:
+        hb.stop()
+        hb.join()
+
+
+# --- Encrypt Leaf Function and Helpers ---
+
+def encrypt_leaf(leaf_path, files=None, passphrase_file=None, compress=False, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0, encryption_config=None):
+    """Encrypts a leaf, potentially with compression."""
+    # 1. Validate encryption configuration
+    if not validate_encryption_parameters(passphrase_file, encryption_config):
+        return None
+    
+    # 2. Prepare environment
+    leaf_id = hashlib.md5(leaf_path.encode()).hexdigest()[:8]
+    staging = prepare_staging_environment(
+        leaf_path, leaf_id, files, remote_conn, 
+        remote_base_path, local_branch_root, expected_size
+    )
+    
+    if staging is None:
+        return None
+    
+    # 3. Prepare file paths
+    tar_flags, ext = prepare_archive_params(compress)
+    intermediate_file, encrypted_path = prepare_encryption_paths(leaf_id, ext)
+    
+    # 4. Build tar command
+    tar_cmd = build_tar_command_for_encryption(
+        staging["target_path"], staging["parent"], 
+        staging["base"], files, tar_flags, intermediate_file
+    )
+    
+    # 5. Build encryption command
+    gpg_cmd = build_encryption_command(
+        intermediate_file, encrypted_path, passphrase_file, encryption_config
+    )
+    
+    # 6. Execute encryption process
+    success = execute_encryption_process(
+        tar_cmd, gpg_cmd, intermediate_file, encrypted_path, expected_size
+    )
+    
+    # 7. Cleanup and return
+    cleanup_encryption_temp(intermediate_file, staging["local_raw"])
+    
+    return encrypted_path if success else None
+
+
+def validate_encryption_parameters(passphrase_file, encryption_config):
+    """Validate that we have necessary encryption configuration."""
+    use_key_method = False
+    if encryption_config and encryption_config['method'] == 'key':
+        use_key_method = True
+        # Check if we have a valid key ID
+        if not encryption_config['gpg_key_id']:
+            print(f"[ERROR] Key-based encryption selected but no gpg_key_id configured")
+            return False
+    elif not passphrase_file:
+        # Password method selected but no password file
+        print(f"[ERROR] Password-based encryption selected but no passphrase file provided")
+        return False
+    
+    return True
+
+
+def prepare_archive_params(compress):
+    """Prepare archive parameters based on compression need."""
+    tar_flags = "-czf" if compress else "-cf"
+    ext = ".tar.gz" if compress else ".tar"
+    return tar_flags, ext
+
+
+def prepare_encryption_paths(leaf_id, ext):
+    """Prepare paths for intermediate and final encrypted files."""
+    intermediate_file = os.path.join(STAGING_DIR, f"bundle_{leaf_id}{ext}")
+    encrypted_path = os.path.join(STAGING_DIR, f"enc_{leaf_id}.gpg")
+    return intermediate_file, encrypted_path
+
+
+def build_tar_command_for_encryption(target_path, parent, base, files, tar_flags, intermediate_file):
+    """Build the tar command for the first phase of encryption."""
+    if files:
+        files_list = " ".join([shlex.quote(f) for f in files])
+        return f"tar -C {shlex.quote(target_path)} {tar_flags} {shlex.quote(intermediate_file)} {files_list}"
+    else:
+        return f"tar -C {shlex.quote(parent)} {tar_flags} {shlex.quote(intermediate_file)} {shlex.quote(base)}"
+
+
+def build_encryption_command(intermediate_file, encrypted_path, passphrase_file, encryption_config):
+    """Build GPG command based on encryption method."""
+    if encryption_config and encryption_config['method'] == 'key':
+        # Use key-based encryption
+        return [
+            "gpg", "--batch", "--yes",
+            "--recipient", encryption_config['gpg_key_id'],
+            "--output", encrypted_path,
+            "--encrypt", intermediate_file
+        ]
+    else:
+        # Use password-based encryption
+        return [
+            "gpg", "--batch", "--yes", 
+            "--passphrase-file", passphrase_file,
+            "--symmetric", "--cipher-algo", "AES256", 
+            "--output", encrypted_path, 
+            intermediate_file
+        ]
+
+
+def execute_encryption_process(tar_cmd, gpg_cmd, intermediate_file, encrypted_path, expected_size):
+    """Execute the two-phase encryption process with progress monitoring."""
+    # PHASE 1: Create the Tarball with Heartbeat
+    tar_success = run_with_heartbeat(
+        tar_cmd, intermediate_file, expected_size, "CPU: GPG"
+    )
+    
+    if not tar_success or not os.path.exists(intermediate_file):
+        return False
+    
+    # PHASE 2: Encrypt with Heartbeat (watching the GPG output)
+    gpg_success = run_with_heartbeat(
+        gpg_cmd, encrypted_path, expected_size, "CPU: GPG", shell=False
+    )
+    
+    return gpg_success and os.path.exists(encrypted_path)
+
+
+def cleanup_encryption_temp(intermediate_file, local_raw):
+    """Clean up temporary files used during encryption."""
+    if os.path.exists(intermediate_file):
+        os.remove(intermediate_file)
+    if local_raw and os.path.exists(local_raw):
+        shutil.rmtree(local_raw)
+
+
+# --- Compress Leaf Function and Helpers ---
+
+def compress_leaf(leaf_path, files=None, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0):
+    """Creates a compressed archive of a leaf."""
+    # 1. Prepare environment
+    leaf_id = hashlib.md5(leaf_path.encode()).hexdigest()[:8]
+    staging = prepare_staging_environment(
+        leaf_path, leaf_id, files, remote_conn, 
+        remote_base_path, local_branch_root, expected_size
+    )
+    
+    if staging is None:
+        return None
+    
+    # 2. Prepare file paths
+    compressed_path = os.path.join(STAGING_DIR, f"comp_{leaf_id}.tar.gz")
+    
+    # 3. Build compression command
+    cmd = build_compression_command(
+        staging["target_path"], staging["parent"], 
+        staging["base"], files, compressed_path
+    )
+    
+    # 4. Execute compression with heartbeat
+    success = run_with_heartbeat(
+        cmd, compressed_path, expected_size, "DISK: TAR"
+    )
+    
+    # 5. Cleanup and return
+    if staging["local_raw"] and os.path.exists(staging["local_raw"]):
+        shutil.rmtree(staging["local_raw"])
+    
+    return compressed_path if success else None
+
+
+def build_compression_command(target_path, parent, base, files, compressed_path):
+    """Build the tar command for compression."""
+    if files:
+        files_list = " ".join([shlex.quote(f) for f in files])
+        return f"tar -C {shlex.quote(target_path)} -czf {shlex.quote(compressed_path)} {files_list}"
+    else:
+        return f"tar -C {shlex.quote(parent)} -czf {shlex.quote(compressed_path)} {shlex.quote(base)}"
+
 
 def load_inventory(inventory_path):
     """
@@ -1601,8 +2122,6 @@ def perform_rebag(inventory, target_bag_ids, config, is_live, requeue=True):
     
     # Return the branch key to main() for isolation
     return list(affected_branches)[0] if affected_branches else True
-
-from datetime import datetime, timedelta
 
 def get_branch_financials(inventory, unique_bags, config):
     """
@@ -2162,27 +2681,6 @@ def show_tree(inventory):
     print("TAG KEY: (M)utable, (I)mmutable, (C)ompress, (E)ncrypt, (L)ocked")
     print("="*115 + "\n")
 
-import boto3
-
-def ensure_aws_metadata(config):
-    """
-    Retrieves the current AWS Account ID and Region dynamically.
-    Falls back to 'REDACTED' if metadata cannot be fetched.
-    """
-    try:
-        # Create an STS client to get caller identity (Account ID)
-        sts = boto3.client('sts')
-        account_id = sts.get_caller_identity().get('Account', 'REDACTED')
-        
-        # Create a session to get the configured region
-        session = boto3.Session()
-        region = session.region_name if session.region_name else 'REDACTED'
-        
-        return account_id, region
-    except Exception as e:
-        # If offline or no credentials, use redacted placeholders
-        return "REDACTED", "REDACTED"
-
 def log_aws_transaction(action, archive_key, size_bytes, etag, response_metadata, aukive):
     """
     Appends a permanent, auditable NDJSON record to the transaction ledger.
@@ -2361,86 +2859,161 @@ def get_tree_size(path):
         pass
     return total
 
-def run_smart_cron(inventory, tree_lines, config, args):
+def run_smart_cron(inventory, tree_lines, config, args, encryption_config=None):
     """
     Rolling Scheduler: Checks 'last_scan' of each branch.
     Only processes branches that have been dormant for > INTERVAL days.
-    """
-    # 1. Get Interval from Config (Default to 190 days for safety)
-    try:
-        interval_days = int(config.get('settings', 'scan_interval_days', fallback=190))
-    except ValueError:
-        interval_days = 190
     
-    run_count = 0
-    now = datetime.now()
+    Returns:
+        bool: True if any work was performed, False otherwise
+    """
+    # Get scan interval setting
+    interval_days = get_scan_interval(config)
+    
+    # Identify branches that need processing
+    eligible_branches = find_eligible_branches(inventory, tree_lines, interval_days)
+    
+    # Process eligible branches
+    return process_eligible_branches(eligible_branches, inventory, tree_lines, args, encryption_config)
 
+
+def get_scan_interval(config):
+    """
+    Get the scan interval from config.
+    
+    Returns:
+        int: Scan interval in days (default 190)
+    """
+    try:
+        return int(config.get('settings', 'scan_interval_days', fallback=190))
+    except ValueError:
+        return 190
+
+
+def find_eligible_branches(inventory, tree_lines, interval_days):
+    """
+    Identify branches that are eligible for scanning based on their age.
+    
+    Args:
+        inventory: The inventory dictionary
+        tree_lines: List of branch definitions from tree.txt
+        interval_days: Minimum age in days to be eligible for scanning
+    
+    Returns:
+        list: List of eligible branch definitions
+    """
+    eligible_branches = []
+    now = datetime.now()
+    
     for line in tree_lines:
         line = line.strip()
-        # Skip comments
-        if not line or line.startswith("#"): continue
-
-        # 2. Check Inventory History
-        last_scan_str = None
-        if line in inventory.get("branches", {}):
-            last_scan_str = inventory["branches"][line].get("last_scan")
-
-        # 3. Decision Logic
-        should_run = False
-        reason = ""
-
-        if not last_scan_str:
-            should_run = True
-            reason = "[NEW/NEVER SCANNED]"
-        else:
-            try:
-                last_scan = datetime.fromisoformat(last_scan_str)
-                age = (now - last_scan).days
-                
-                if age >= interval_days:
-                    should_run = True
-                    reason = f"[MATURE] Last scan: {age} days ago"
-                else:
-                    should_run = False
-                    # Verbose only if requested, otherwise silent
-                    # print(f"  [SKIP] {line[:30]}... ({age} days old)")
-            except ValueError:
-                should_run = True
-                reason = "[ERROR] Invalid date format"
-
-        # 4. Execution
-        if should_run:
-            print(f"\n>>> TRIGGERING: {line}")
-            print(f"    Reason: {reason}")
+        # Skip comments or empty lines
+        if not line or line.startswith("#"):
+            continue
             
-            # Re-use your existing logic
-            # We must init a fresh run_stats for each branch to keep reporting clean
-            branch_stats = {} 
-            
-            # Check for locks
-            allowed, msg = is_action_permitted(line, "MIRROR")
-            if not allowed:
-                print(f"    [SKIPPING] {msg}")
-                continue
-
-            # EXECUTE
-            process_branch(
-                line, 
-                inventory, 
-                branch_stats, 
-                args.run, 
-                args.limit, 
-                False, # Not a repack
-                PASSPHRASE_FILE # Ensure this global is accessible
-            )
-            
-            run_count += 1
-
-    if run_count == 0:
-        return False # Signal that NO work was done
+        # Get branch status and decision
+        should_scan, reason = is_branch_due_for_scan(inventory, line, interval_days, now)
+        
+        # Add to eligible list if needed
+        if should_scan:
+            eligible_branches.append({
+                'line': line,
+                'reason': reason
+            })
     
-    print(f"\n[DONE] Smart Cron processed {run_count} branches.")
-    return True 
+    return eligible_branches
+
+
+def is_branch_due_for_scan(inventory, branch_line, interval_days, current_time=None):
+    """
+    Determine if a branch needs scanning based on its last scan timestamp.
+    
+    Args:
+        inventory: The inventory dictionary
+        branch_line: Branch definition from tree.txt
+        interval_days: Minimum age in days to be eligible for scanning
+        current_time: Current datetime (for testing, defaults to now)
+    
+    Returns:
+        tuple: (should_scan (bool), reason (str))
+    """
+    if current_time is None:
+        current_time = datetime.now()
+    
+    # Get last scan timestamp
+    last_scan_str = None
+    if branch_line in inventory.get("branches", {}):
+        last_scan_str = inventory["branches"][branch_line].get("last_scan")
+
+    # Never scanned before
+    if not last_scan_str:
+        return True, "[NEW/NEVER SCANNED]"
+    
+    # Check age
+    try:
+        last_scan = datetime.fromisoformat(last_scan_str)
+        age_days = (current_time - last_scan).days
+        
+        if age_days >= interval_days:
+            return True, f"[MATURE] Last scan: {age_days} days ago (Interval: {interval_days})"
+        else:
+            return False, f"[FRESH] Last scan: {age_days} days ago (Interval: {interval_days})"
+    except ValueError:
+        return True, "[ERROR] Invalid date format in inventory"
+
+
+def process_eligible_branches(eligible_branches, inventory, tree_lines, args, encryption_config):
+    """
+    Process branches that are eligible for scanning.
+    
+    Args:
+        eligible_branches: List of eligible branch definitions
+        inventory: The inventory dictionary
+        tree_lines: List of branch definitions from tree.txt
+        args: Command-line arguments
+    
+    Returns:
+        bool: True if any branches were processed, False otherwise
+    """
+    if not eligible_branches:
+        return False
+    
+    run_count = 0
+    
+    for branch in eligible_branches:
+        line = branch['line']
+        reason = branch['reason']
+        
+        print(f"\n>>> TRIGGERING: {line}")
+        print(f"    Reason: {reason}")
+        
+        # Check if branch is locked
+        allowed, msg = is_action_permitted(line, "MIRROR")
+        if not allowed:
+            print(f"    [SKIPPING] {msg}")
+            continue
+        
+        # Initialize stats tracking for this branch
+        branch_stats = {}
+        
+        # Process the branch
+        process_branch(
+            line, 
+            inventory, 
+            branch_stats, 
+            args.run, 
+            args.limit, 
+            False,  # is_repack
+            PASSPHRASE_FILE,
+            encryption_config
+        )
+        
+        run_count += 1
+    
+    if run_count > 0:
+        print(f"\n[DONE] Smart Cron processed {run_count} branches.")
+        
+    return run_count > 0
 
 def get_restore_targets(args, inventory):
     """
@@ -2609,7 +3182,7 @@ def get_restore_targets(args, inventory):
 
     return targets
 
-def check_s3_restore_status(bucket, key, tier):
+def check_s3_restore_status(bucket, key):
     """
     Function New #2: The S3 Negotiator.
     Returns: 'READY', 'PENDING', 'FROZEN', or 'STANDARD'
@@ -2771,7 +3344,7 @@ def perform_restore_orchestration(restore_jobs, config, passphrase_file):
         print(f"\n[JOB] Bag: {bag_id} | Dest: {dest}")
         
         # 1. Check Status
-        status = check_s3_restore_status(s3_bucket, key, tier)
+        status = check_s3_restore_status(s3_bucket, key)
         print(f"  [STATUS] S3 Object is: {status}")
         
         if status == 'FROZEN':
@@ -2853,6 +3426,168 @@ def cleanup_staging_dir(staging_path):
     except Exception as e:
         print(f"  [WARN] Startup cleanup encountered an issue: {e}")
 
+def load_encryption_config(config_file):
+    """Load encryption configuration from the config file"""
+    config = configparser.ConfigParser()
+    config.read(config_file)
+    
+    encryption = {}
+    if 'encryption' in config:
+        encryption['method'] = config['encryption'].get('method', 'password')
+        encryption['password_file'] = config['encryption'].get('password_file', 'key.txt')
+        encryption['gpg_key_id'] = config['encryption'].get('gpg_key_id', 'backup@glaciermirror.local')
+    else:
+        # Default to password method if section doesn't exist
+        encryption['method'] = 'password'
+        encryption['password_file'] = 'key.txt'
+        
+    return encryption
+
+def encrypt_file(input_file, output_file, config):
+    """Encrypt a file using GPG based on configuration"""
+    if config['method'] == 'key':
+        # Use key-based encryption
+        cmd = [
+            "gpg", "--batch", "--yes",
+            "--recipient", config['gpg_key_id'],
+            "--output", output_file,
+            "--encrypt", input_file
+        ]
+        subprocess.run(cmd, check=True)
+    else:
+        # Use password-based encryption
+        password_file = config['password_file']
+        if not os.path.exists(password_file):
+            raise FileNotFoundError(f"Password file not found: {password_file}")
+        
+        with open(password_file, 'r') as f:
+            password = f.read().strip()
+        
+        # Create a temporary batch file with the passphrase
+        with tempfile.NamedTemporaryFile('w', delete=False) as batch_file:
+            batch_file.write(f"%echo Encrypting\n")
+            batch_file.write(f"passphrase {password}\n")
+            batch_file.write(f"%commit\n")
+            batch_path = batch_file.name
+        
+        try:
+            cmd = [
+                "gpg", "--batch", "--yes",
+                "--passphrase-file", batch_path,
+                "--symmetric",
+                "--cipher-algo", "AES256",
+                "--output", output_file,
+                "--encrypt", input_file
+            ]
+            subprocess.run(cmd, check=True)
+        finally:
+            # Securely delete the temporary batch file
+            os.unlink(batch_path)
+
+def decrypt_file(input_file, output_file, config):
+    """Decrypt a file using GPG based on configuration"""
+    if config['method'] == 'key':
+        # Key-based decryption
+        cmd = [
+            "gpg", "--batch", "--yes",
+            "--output", output_file,
+            "--decrypt", input_file
+        ]
+        subprocess.run(cmd, check=True)
+    else:
+        # Password-based decryption
+        password_file = config['password_file']
+        if not os.path.exists(password_file):
+            raise FileNotFoundError(f"Password file not found: {password_file}")
+            
+        with open(password_file, 'r') as f:
+            password = f.read().strip()
+        
+        # Create a temporary batch file with the passphrase
+        with tempfile.NamedTemporaryFile('w', delete=False) as batch_file:
+            batch_file.write(f"%echo Decrypting\n")
+            batch_file.write(f"passphrase {password}\n")
+            batch_file.write(f"%commit\n")
+            batch_path = batch_file.name
+            
+        try:
+            cmd = [
+                "gpg", "--batch", "--yes",
+                "--passphrase-file", batch_path,
+                "--output", output_file,
+                "--decrypt", input_file
+            ]
+            subprocess.run(cmd, check=True)
+        finally:
+            # Securely delete the temporary batch file
+            os.unlink(batch_path)
+
+def generate_gpg_key():
+    """Generate a new GPG key pair for backup encryption"""
+    print("Generating new GPG key pair...")
+    print("You'll be asked for details about the key.")
+    
+    subprocess.run(["gpg", "--full-generate-key"], check=True)
+    
+    print("\nKey generated. Now run with --show-key-id to see your key ID.")
+    print("Then update your glacier.cfg file with this key ID.")
+
+def show_gpg_key_id(key_id=None):
+    """Show information about available GPG keys"""
+    if key_id:
+        print(f"Looking up information for key: {key_id}")
+        subprocess.run(["gpg", "--list-keys", key_id])
+    else:
+        print("Available GPG keys:")
+        subprocess.run(["gpg", "--list-keys"])
+
+def export_gpg_key(output_file, key_id, private=False):
+    """
+    Export a GPG key to a file
+    
+    Args:
+        output_file: Path to save the exported key
+        key_id: ID of the key to export
+        private: If True, exports private key; if False, exports public key
+    """
+    if key_id is None:
+        print("Error: No GPG key ID specified in config.")
+        print("Please set gpg_key_id in the [encryption] section of your config file,")
+        print("or specify a key ID with --key-id.")
+        return False
+    
+    if private:
+        print("CAUTION: You are exporting a private key.")
+        print("This key provides full access to decrypt your backups.")
+        print("Keep this file secure and delete it after use!")
+        confirm = input("Type 'I UNDERSTAND' to continue: ")
+        if confirm != "I UNDERSTAND":
+            print("Export cancelled.")
+            return False
+        
+        cmd = ["gpg", "--armor", "--export-secret-keys", key_id, "--output", output_file]
+    else:
+        cmd = ["gpg", "--armor", "--export", key_id, "--output", output_file]
+    
+    try:
+        subprocess.run(cmd, check=True)
+        
+        # Set appropriate permissions
+        if private:
+            os.chmod(output_file, 0o600)  # Restrictive permissions for private key
+            print(f"Private key exported to {output_file}")
+            print("IMPORTANT: This file provides full access to decrypt your backups.")
+            print("Secure this file and delete it when no longer needed.")
+        else:
+            os.chmod(output_file, 0o644)  # More permissive for public key
+            print(f"Public key exported to {output_file}")
+            print("This file can be safely shared with systems that need to encrypt data.")
+        
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Error exporting key: {e}")
+        return False
+
 def main():
 
     parser = argparse.ArgumentParser(
@@ -2891,7 +3626,14 @@ def main():
     view_group.add_argument('--show-leaf', type=str, metavar="PATH", help='Show leaf contents')
     view_group.add_argument('--show-bag', type=str, metavar="ID", help='Show leaves in a bag')
 
-    # --- 5. MAINTENANCE ---
+    # --- 5. GPG MANAGEMENT
+    key_group = parser.add_argument_group('GPG Management')
+    key_group.add_argument('--generate-gpg-key', action='store_true', help='Generate a new GPG key pair for backup encryption')
+    key_group.add_argument('--show-key-id', action='store_true', help='Show the ID of the currently configured GPG key')
+    key_group.add_argument('--export-key', metavar='FILE', help='Export a GPG key to a file')
+    key_group.add_argument('--key-type', choices=['public', 'private'], default='public', help='Type of key to export (default: public)')
+
+    # --- 6. MAINTENANCE ---
     mgmt_group = parser.add_argument_group('Maintenance')
     mgmt_group.add_argument("--run", action="store_true", help="Trigger live-run (otherwise dry-run)")
     mgmt_group.add_argument("--limit", type=int, default=0, help="Upload limit in MB/s")
@@ -2952,6 +3694,9 @@ def main():
         # This will exit the script if inventory.json is corrupted
         inventory = load_inventory(INVENTORY_FILE)
 
+        # Load encryption configuration
+        encryption_config = load_encryption_config(config_path)
+
         # This will exit the script if encryption is required but key.txt is missing
         encrypt_list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "encrypt.txt")    
         PASSPHRASE_FILE = validate_encryption_config(args.tree_file)
@@ -2995,6 +3740,22 @@ def main():
 
         if args.show_leaf:
             show_leaf(inventory, args.show_leaf)
+            sys.exit(0)
+
+        # For GPG key management commands
+        if args.generate_gpg_key:
+            generate_gpg_key()
+            sys.exit(0)
+    
+        if args.show_key_id:
+            show_gpg_key_id(encryption_config['gpg_key_id'])
+            sys.exit(0)
+
+        if args.export_key:
+            if args.key_type == 'private':
+                export_gpg_key(args.export_key, encryption_config['gpg_key_id'], private=True)
+            else:
+                export_gpg_key(args.export_key, encryption_config['gpg_key_id'], private=False)
             sys.exit(0)
 
         if args.restore_file or args.restore_bag or args.restore_branch or args.restore_tree:
@@ -3177,7 +3938,7 @@ def main():
             
         # --- CRON EXECUTION ---
         if args.cron:
-            work_was_performed = run_smart_cron(inventory, tree_lines, config, args)
+            work_was_performed = run_smart_cron(inventory, tree_lines, config, args, encryption_config)
         else:
             # Standard Loop (non-cron)
             for line in tree_lines:
@@ -3196,7 +3957,7 @@ def main():
                         continue
                 
                 work_was_performed = True
-                process_branch(line, inventory, run_stats, args.run, args.limit, args.repack, PASSPHRASE_FILE)
+                process_branch(line, inventory, run_stats, args.run, args.limit, args.repack, PASSPHRASE_FILE, encryption_config)
 
         # Summary and final artifacts happen after all lines are processed
         if work_was_performed:

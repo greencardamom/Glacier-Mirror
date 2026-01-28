@@ -1,3 +1,11 @@
+<!--
+
+Copyright (c) 2026 greencardamom
+https://github.com/greencardamom/Glacier
+
+This documentation is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.
+See LICENSE.md for more details.
+-->
 # The Cold Truth: Why LTO Tape Still Rules Amazon's Glacier Deep Archivey
 
 Since its inception, Amazon S3 Glacier has been the subject of intense industry "archaeology." While Amazon treats its hardware stacks as a proprietary secret, the laws of physics and economics leave a clear trail. As of 2026, while SSDs dominate the hot tier and HDDs cling to the warm tier, the evidence demonstrates that Glacier Deep Archive is powered by robotic LTO (Linear Tape-Open) libraries.

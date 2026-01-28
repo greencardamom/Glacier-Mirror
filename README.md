@@ -1,3 +1,10 @@
+<!--
+Copyright (c) 2026 Greencardamom
+https://github.com/greencardamom/Glacier
+
+This documentation is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.
+See LICENSE.md for more details.
+-->
     =========================================
           G L A C I E R   M I R R O R
     =========================================
