@@ -259,7 +259,7 @@ Each line has two elements: *location* and *::TAG*
   * **Example**: `/path/to/data ::MUTABLE ::EXCLUDE temp_folder ::EXCLUDE log`
   * **Example**: `/path/to/data/temp_folder ::IMMUTABLE ::COMPRESS`
   * **Example**: `/path/to/data/log ::IMMUTABLE ::ENCRYPT`
-    * *Note: In the above example every subdirectory in the branch /path/to/data is a leaf stored as-is, except for temp_folder and log which are stored as compressed and encrypted.*
+    * *Note: In the above example every subdirectory in the branch /path/to/data is a leaf stored as-is, except for temp_folder and log which are stored as compressed and encrypted, respectively.*
 
 The /path/to/data can be a local directory or a remote directory eg. user@machine.net:/path/to/data -- If remote it will connect via sshfs and rsync. It assumes you have passwordless ssh configured.
 
