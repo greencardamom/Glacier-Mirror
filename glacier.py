@@ -223,21 +223,21 @@ class Heartbeat(threading.Thread):
 
         if tag == "TAR":
             if self.is_compressed and shrink_val != 0:
-                final_msg = f"[DONE in {elapsed_str}] - compressed -{abs(shrink_val)}%"
+                final_msg = f"[DONE | {elapsed_str}] - compressed -{abs(shrink_val)}%"
             else:
-                final_msg = f"[DONE in {elapsed_str}] - packaged"
+                final_msg = f"[DONE | {elapsed_str}] - packaged"
         
         elif tag == "GPG":
             # If shrinkage is 0, just show 'encrypted' per your working sample
             stats = f" - encrypted -{shrink_val}%" if shrink_val != 0 else " - encrypted"
-            final_msg = f"[DONE in {elapsed_str}]{stats}"
+            final_msg = f"[DONE | {elapsed_str}]{stats}"
 
         elif "RSYNC" in tag:
             size_str = format_bytes(os.path.getsize(self.filepath)) if os.path.exists(self.filepath) else "???"
-            final_msg = f"[DONE in {elapsed_str}] - {size_str} transferred"
+            final_msg = f"[DONE | {elapsed_str}] - {size_str} transferred"
             
         else:
-            final_msg = f"100.0% {self.verb_past} [DONE in {elapsed_str}]"
+            final_msg = f"100.0% {self.verb_past} [DONE | {elapsed_str}]"
 
         sys.stdout.write(f"\r{full_header} {final_msg}{' ':40}\n")
         sys.stdout.flush()
@@ -2579,7 +2579,7 @@ def stage_remote_leaf(remote_conn, remote_base_path, local_leaf_path, local_bran
         header = f"{' ' * 7}[RSYNC]"
         full_header = f"{header:<15}:"
 
-        sys.stdout.write(f"\r{full_header} [DONE in {elapsed_str}] - {size_str} transferred{'':80}\n")
+        sys.stdout.write(f"\r{full_header} [DONE | {elapsed_str}] - {size_str} transferred{'':80}\n")
         sys.stdout.flush()
         
         # Check exit code
