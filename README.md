@@ -127,19 +127,19 @@ Before running the system, ensure the following are installed:
   * Use this to actually upload files and update the master `inventory.json`
     * **Live Run**: `./glacier.py --mirror-tree --run`
     * **Output:** Updates `inventory.json` and uploads `.tar` files to S3.
-      *Note: There is an S3 cost for this test. Due to the 180-day minimum retention policy, you will be billed for 6 months of storage upon deletion. For the 1.2GB if this test it will total less than $0.01.*
+      * *Note: There is an S3 cost for this test. Due to the 180-day minimum retention policy, you will be billed for 6 months of storage upon deletion. Given the 1.2GB of this test, it will total less than $0.01.*
 * **View results**
   * Try out various commands to view results
     * `./glacier-mirror --report`
     * `./glacier-mirror --show-tree`
     * `./glacier-mirror --show-branch [branch name]` 
-      * *[branch name] is found in `--show-tree`*
+      * *[branch name] is found in `--show-tree`. In the [branch name] do not include any `::TAGS`*
     * `./glacier-mirror --show-bag [bag name]`
-      * *[bag name] is found in `--show-branch`*
+      * *[bag name] is found in `--show-branch`. Do not include any `::TAGS`*
     * `more inventory.json`
       * View the database and its elements.
     * `./glacier.py --mirror-branch [branch name] --force-reset --run`
-      * Force a re-run of a branch
+      * Force a re-run of a branch. 
 * **Cleanup**
   * To cleanup after the test. **Important** to avoid latent charges from Amazon.
   * **Purge from S3 & Inventory**: This command will delete the S3 objects associated with this branch and remove the entry from `inventory.json`.
