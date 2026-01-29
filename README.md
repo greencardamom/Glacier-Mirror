@@ -253,7 +253,7 @@ Each line has two elements: *location* and *::TAG*
   * **Effect**: Glacier is no longer a mirror. S3 is a static backup of your bag files. Useful for storing data that will never change locally.
   * **Example**: `/path/to/data ::MUTABLE ::ENCRYPT ::LOCKED`
 
-* **::EXCLUDE <Pattern>**
+* **`::EXCLUDE <pattern>`**
   * **Behavior**: Skips specific folders within that branch. Allows for fine-tuning settings within a master branch.
     * *Note: You can have multiple exclude tags on one line.*
   * **Example**: `/path/to/data ::MUTABLE ::EXCLUDE temp_folder ::EXCLUDE log`
