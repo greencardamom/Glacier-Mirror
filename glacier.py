@@ -34,6 +34,7 @@ SYSTEM_DESCRIPTION = "Amazon S3 Glacier Deep Archive Tape Backup Management"
 DEFAULT_TREE_FILE = "tree.cfg"  # <--- Chang to rename the file globally
 
 # Standard library imports
+import re
 import glob
 import time
 import threading
@@ -49,7 +50,7 @@ import configparser
 import io
 import shlex
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from boto3.s3.transfer import TransferConfig # Added for throttling
 
@@ -137,78 +138,113 @@ STATUS_WIDTH = 13  # Length of "[NET: RSYNC]" is 12. We add 1 for spacing = 13.
 # --- HELPER FUNCTIONS ---
 
 class Heartbeat(threading.Thread):
-    def __init__(self, filepath, target_size, status="Processing", is_dir=False):
+    def __init__(self, filepath=None, target_size=0, status="TAR", is_compressed=False):
         super().__init__()
         self.daemon = True
         self.filepath = filepath
         self.target_size = target_size
-        self.status = status
-        self.is_dir = is_dir
+        self.status = status.replace(": LEAF", "").replace(":LEAF", "")
+        self.is_compressed = is_compressed
         self.stop_signal = threading.Event()
-        self.is_compressed_phase = False
-        
-        # Pre-calculate UI elements
-        self.tag = f"[{self.status}]"
+        self.paused = False
+        self.last_size, self.last_time = 0, time.time()
+        self.speed, self.start_time = 0, time.time()
+        self.verb_active = "processing"
+        self.verb_past = "processed"
         self._derive_verbs()
-        self.last_line = ""
 
     def _derive_verbs(self):
-        """Sets the active (ing) and past (ed) verbs based on the current mode."""
-        if "RSYNC" in self.status:
-            self.verb_active = "transferring"
-            self.verb_past = "transferred"
-        elif "GPG" in self.status:
-            self.verb_active = "encrypting"
-            self.verb_past = "encrypted"
-        elif "TAR" in self.status:
-            if self.is_compressed_phase:
-                self.verb_active = "compressing"
-                self.verb_past = "compressed"
-            else:
-                self.verb_active = "packaging"
-                self.verb_past = "packaged"
-        else:
-            self.verb_active = "writing"
-            self.verb_past = "written"
+        s = self.status
+        if "RSYNC" in s: self.verb_active, self.verb_past = "transferring", "transferred"
+        elif "GPG" in s: self.verb_active, self.verb_past = "encrypting", "encrypted"
+        elif "TAR" in s: self.verb_active, self.verb_past = ("compressing", "compressed") if self.is_compressed else ("packaging", "packaged")
+        elif "BAG" in s: self.verb_active, self.verb_past = "packaging", "packaged"
+        elif "NET" in s: self.verb_active, self.verb_past = "uploading", "uploaded"
+        else: self.verb_active, self.verb_past = "processing", "processed"
 
     def run(self):
         while not self.stop_signal.is_set():
-            if os.path.exists(self.filepath):
+            if not self.paused and self.filepath and os.path.exists(self.filepath):
                 try:
-                    current = get_tree_size(self.filepath) if self.is_dir else os.path.getsize(self.filepath)
-                    ratio = 0.6 if self.is_compressed_phase else 1.0
-                    divisor = (self.target_size * ratio) if self.target_size > 0 else 1
-                    pct = (current / divisor) * 100
-                    if pct > 100.0: pct = 100.0
+                    current = os.path.getsize(self.filepath)
+                    now = time.time()
+                    if (now - self.last_time) > 0.5:
+                        self.speed = (current - self.last_size) / (now - self.last_time)
+                        self.last_size, self.last_time = current, now
 
-                    # Use the ACTIVE verb (e.g. "transferring")
-                    self.last_line = f"  {self.tag:<{STATUS_WIDTH}}: {pct:.1f}% {self.verb_active} ({format_bytes(current)})    "
-                    print(f"{self.last_line:<100}", end="\r", flush=True)
-                except (OSError, ZeroDivisionError):
-                    pass
-            else:
-                self.last_line = f"  {self.tag:<{STATUS_WIDTH}}: Preparing stream..."
-                print(f"{self.last_line:<100}", end="\r", flush=True)
-            
+                    # Column 15 margin
+                    tag = self.status
+                    indent_size = 5 if (tag.startswith("BAG") or tag.startswith("NET") or "DB" in tag or "OK" in tag) else 7
+                    header = f"{' ' * indent_size}[{tag}]"
+                    full_header = f"{header:<15}:"
+
+                    done_str = format_bytes(current)
+                    speed_str = format_bytes(self.speed) + "/s"
+                    
+                    if (tag == "TAR" and self.is_compressed) or "RSYNC" in tag:
+                        line = f"{full_header} {done_str} {self.verb_active} @ {speed_str}"
+                    else:
+                        pct = min(99.9, (current / self.target_size) * 100) if self.target_size > 0 else 0
+                        line = f"{full_header} {pct:5.1f}% {self.verb_active} [{done_str}/{format_bytes(self.target_size)}] @ {speed_str}"
+
+                    sys.stdout.write(f"\r{line:<120}")
+                    sys.stdout.flush()
+                except: pass
             time.sleep(0.1)
 
-    def snap_done(self):
-        # Use the PAST tense verb (e.g. "transferred")
-        final_line = f"  {self.tag:<{STATUS_WIDTH}}: 100.0% {self.verb_past} [DONE]"
-        print(f"\r{final_line:<100}")
-
-    def update_target(self, new_filepath, new_status=None, is_compressed=True, is_dir=False):
+    def update_target(self, new_filepath, new_status=None, is_compressed=None, target_size=None):
+        self.paused = True
         self.filepath = new_filepath
-        self.is_dir = is_dir
-        self.is_compressed_phase = is_compressed
+        if is_compressed is not None: self.is_compressed = is_compressed
+        if target_size: self.target_size = target_size
         if new_status: 
-            self.status = new_status
-            self.tag = f"[{self.status}]"
-            self._derive_verbs()  # Re-calculate verbs for the new status
+            self.start_time = time.time() # This fixes the [BAG] timing issue
+            self.status = new_status.replace(": LEAF", "").replace(":LEAF", "")
+            self._derive_verbs()
+        self.paused = False
+
+    def snap_done(self):
+        self.paused = True
+        elapsed = time.time() - self.start_time
+        elapsed_str = f"{int(elapsed // 60):02d}:{int(elapsed % 60):02d}"
+        
+        tag = self.status
+        indent_size = 5 if (tag.startswith("BAG") or tag.startswith("NET") or "DB" in tag or "OK" in tag) else 7
+        header = f"{' ' * indent_size}[{tag}]"
+        full_header = f"{header:<15}:"
+        
+        # --- RESTORED WORKING FORMATS ---
+        try:
+            current_size = os.path.getsize(self.filepath)
+            shrinkage = (1 - (current_size / self.target_size)) * 100 if self.target_size > 0 else 0
+            shrink_val = int(round(shrinkage))
+        except:
+            shrink_val = 0
+
+        if tag == "TAR":
+            if self.is_compressed and shrink_val != 0:
+                final_msg = f"[DONE in {elapsed_str}] - compressed -{abs(shrink_val)}%"
+            else:
+                final_msg = f"[DONE in {elapsed_str}] - packaged"
+        
+        elif tag == "GPG":
+            # If shrinkage is 0, just show 'encrypted' per your working sample
+            stats = f" - encrypted -{shrink_val}%" if shrink_val != 0 else " - encrypted"
+            final_msg = f"[DONE in {elapsed_str}]{stats}"
+
+        elif "RSYNC" in tag:
+            size_str = format_bytes(os.path.getsize(self.filepath)) if os.path.exists(self.filepath) else "???"
+            final_msg = f"[DONE in {elapsed_str}] - {size_str} transferred"
+            
+        else:
+            final_msg = f"100.0% {self.verb_past} [DONE in {elapsed_str}]"
+
+        sys.stdout.write(f"\r{full_header} {final_msg}{' ':40}\n")
+        sys.stdout.flush()
 
     def stop(self):
         self.stop_signal.set()
-        self.snap_done()
+        if self.is_alive(): self.join(timeout=1)
 
 def format_bytes(size):
     """Converts raw bytes to human readable format."""
@@ -465,7 +501,7 @@ def generate_summary(inventory, run_stats, is_live):
 
 # --- PROCESSING ---
 
-def construct_tar_command(tar_path, leaf_list, branch_root, designator, passphrase_file, branch_leaves, remote_conn, remote_base_path, excludes=None, encryption_config=None):
+def construct_tar_command(tar_path, leaf_list, branch_root, designator, passphrase_file, branch_leaves, remote_conn, remote_base_path, excludes=None, encryption_config=None, hb=None):
     """
     Constructs a tar command to archive leaves, handling encryption and compression as specified.
     
@@ -484,7 +520,8 @@ def construct_tar_command(tar_path, leaf_list, branch_root, designator, passphra
         branch_leaves, 
         remote_conn, 
         remote_base_path, 
-        encryption_config
+        encryption_config,
+        hb=hb
     )
     
     # 3. Optimize tar arguments for efficiency
@@ -524,7 +561,7 @@ def build_exclude_arguments(excludes=None):
 
 
 def process_leaves_for_tar(leaf_list, branch_root, designator, passphrase_file, branch_leaves, 
-                          remote_conn, remote_base_path, encryption_config):
+                          remote_conn, remote_base_path, encryption_config, hb=None):
     """
     Process each leaf to determine how it should be included in the tar archive.
     
@@ -561,12 +598,12 @@ def process_leaves_for_tar(leaf_list, branch_root, designator, passphrase_file, 
             process_encrypted_leaf(
                 leaf, branch_root, rel_path, passphrase_file, needs_compress,
                 remote_conn, remote_base_path, branch_leaves, tar_sequence, 
-                temp_files_to_clean, encryption_config
+                temp_files_to_clean, encryption_config, hb=hb
             )
         elif needs_compress:
             process_compressed_leaf(
                 leaf, branch_root, rel_path, remote_conn, remote_base_path,
-                branch_leaves, tar_sequence, temp_files_to_clean
+                branch_leaves, tar_sequence, temp_files_to_clean, hb=hb
             )
         else:
             # Simple passthrough for standard leaves
@@ -582,22 +619,24 @@ def display_leaf_header(idx, total_leaves, leaf_path, needs_encrypt, needs_compr
     """Display appropriate header for the leaf being processed."""
     if needs_encrypt or needs_compress:                    
         # STYLE: Active Ledger (The "Work" Style) - Each leaf gets its own header
-        label = f"  > Leaf {idx}/{total_leaves}"
+        # Use 5 spaces for indentation
+        label = f"     Leaf {idx}/{total_leaves}"
         print(f"\n{label:<{pad_width}}: {leaf_path}")
     elif not mutable_header_printed:
         # STYLE: Mutable List (The "Fast" Style) - One header for all standard leaves
-        label = "  > Leaves"
+        # Use 5 spaces for indentation
+        label = "     Leaves"
         print(f"\n{label:<{pad_width}}:")
         # The actual leaf will be printed by the caller after setting mutable_header_printed to True
     
     # For subsequent leaves in mutable list style, print indented list item
     if not (needs_encrypt or needs_compress) and mutable_header_printed:
-        print(f"        [{idx:02d}/{total_leaves}] {leaf_path}")
-
+        # Use 6 spaces for further indentation
+        print(f"      [{idx:02d}/{total_leaves}] {leaf_path}")
 
 def process_encrypted_leaf(leaf, branch_root, rel_path, passphrase_file, needs_compress,
                           remote_conn, remote_base_path, branch_leaves, tar_sequence, 
-                          temp_files_to_clean, encryption_config):
+                          temp_files_to_clean, encryption_config, hb=None):
     """Process a leaf that needs encryption."""
     suffix = ".gz.gpg" if needs_compress else ".gpg"
     inner_name = "__BRANCH_ROOT__" + suffix if leaf['is_branch_root'] else f"{rel_path}{suffix}"
@@ -613,7 +652,8 @@ def process_encrypted_leaf(leaf, branch_root, rel_path, passphrase_file, needs_c
         remote_base_path=remote_base_path,
         local_branch_root=branch_root,
         expected_size=leaf['size'],
-        encryption_config=encryption_config
+        encryption_config=encryption_config,
+        hb=hb
     )
     
     if temp_file:
@@ -627,7 +667,7 @@ def process_encrypted_leaf(leaf, branch_root, rel_path, passphrase_file, needs_c
 
 
 def process_compressed_leaf(leaf, branch_root, rel_path, remote_conn, remote_base_path,
-                           branch_leaves, tar_sequence, temp_files_to_clean):
+                           branch_leaves, tar_sequence, temp_files_to_clean, hb=None):
     """Process a leaf that needs compression but not encryption."""
     inner_name = "__BRANCH_ROOT__.tar.gz" if leaf['is_branch_root'] else f"{rel_path}.tar.gz"
     cluster_files = leaf['files'] if leaf['is_branch_root'] else None
@@ -638,7 +678,8 @@ def process_compressed_leaf(leaf, branch_root, rel_path, remote_conn, remote_bas
         remote_conn=remote_conn, 
         remote_base_path=remote_base_path, 
         local_branch_root=branch_root, 
-        expected_size=leaf['size']
+        expected_size=leaf['size'],
+        hb=hb
     )            
     
     if temp_file:
@@ -696,7 +737,6 @@ def generate_final_tar_command(tar_path, exclude_flag, optimized_args):
 
     cmd = f"tar {sparse_flag} {exclude_flag} -cf {shlex.quote(tar_path)} {' '.join(optimized_args)}"    
     return cmd
-
 
 def process_bag(bag_num, leaf_list, branch_root, short_name, bag_size_bytes, is_live, branch_leaves, hostname, branch_stats, upload_limit_mb, designator, passphrase_file, remote_conn, remote_base_path, inventory, excludes=None, encryption_config=None):
     """
@@ -845,7 +885,6 @@ def print_dry_run_message(tar_name, s3_key, s3_bucket):
     print(f"\n{bag_label_str:<{pad_width}}: {tar_name}")
     print(f"  [DRY RUN] Would upload: s3://{s3_bucket}/{s3_key}")
 
-
 def build_and_upload_bag(tar_path, leaf_list, branch_root, designator, passphrase_file,
                         branch_leaves, remote_conn, remote_base_path, excludes,
                         s3_key, s3_bucket, bag_size_bytes, upload_limit_mb, 
@@ -877,68 +916,64 @@ def build_and_upload_bag(tar_path, leaf_list, branch_root, designator, passphras
         return etag
         
     except Exception as e:
-        # Handle upload failure
-        print(f"[FATAL] {e}")
+        # THIS IS THE BLOCK THAT WAS MISSING, PREVENTING THE SCRIPT FROM RUNNING
+        print(f"[FATAL] Upload stage failed: {e}")
         cleanup_files(tar_path, temp_files_to_clean)
         sys.exit(1)
-
 
 def build_tar_archive(tar_path, leaf_list, branch_root, designator, passphrase_file,
                      branch_leaves, remote_conn, remote_base_path, excludes, 
                      bag_size_bytes, encryption_config):
     """Build the tar archive containing all leaves."""
-    cmd, temp_files_to_clean = construct_tar_command(
-        tar_path, 
-        leaf_list, 
-        branch_root, 
-        designator, 
-        passphrase_file, 
-        branch_leaves, 
-        remote_conn, 
-        remote_base_path, 
-        excludes, 
-        encryption_config
-    )
-
-    # Start heartbeat for progress display
+    
+    # UI Setup
     bag_label_str = "  > Bag"
     pad_width = STATUS_WIDTH + 2
-    print(f"\n{bag_label_str:<{pad_width}}: {os.path.basename(tar_path)}")
+    print(f"{bag_label_str:<{pad_width}}: {os.path.basename(tar_path)}")
     
-    hb = Heartbeat(tar_path, bag_size_bytes, status="DISK: TAR")
+    # Start Heartbeat for the whole process
+    hb = Heartbeat(tar_path, bag_size_bytes, status="BAG: TAR")
     hb.start()
-    
+
     try:
-        # Silence stdout so Heartbeat owns the screen
+        # 1. Process Child Leaves (Indented 7 spaces)
+        cmd, temp_files_to_clean = construct_tar_command(
+            tar_path, leaf_list, branch_root, designator, passphrase_file,
+            branch_leaves, remote_conn, remote_base_path, excludes, 
+            encryption_config, hb=hb
+        )
+
+        # 2. Transition back to Bag Level (Indented 5 spaces)
+        sys.stdout.write("\n") 
+        hb.update_target(tar_path, new_status="BAG: TAR", target_size=bag_size_bytes)
+        
+        # 3. Final Packaging
         subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        
+        hb.snap_done()
+        hb.stop()
         return temp_files_to_clean
+
     except subprocess.CalledProcessError as e:
         hb.stop()
-        hb.join()
         print(f"\n[FATAL] Tar failed: {e.stderr.decode() if e.stderr else str(e)}")
         raise e
-    finally:
-        hb.stop()
-        hb.join()
-
 
 def upload_to_s3(tar_path, s3_bucket, s3_key, file_size, upload_limit_mb):
     """
     Upload the tar file to S3 with progress tracking.
-    
-    Returns:
-        str: ETag of the uploaded file
     """
-    # Configure transfer settings
     if upload_limit_mb > 0:
         t_config = TransferConfig(max_bandwidth=upload_limit_mb * 1024 * 1024, max_concurrency=10, use_threads=True)
     else:
         t_config = TransferConfig(use_threads=True)
 
-    # Create progress display
-    desc = "  " + "[NET: AWS]".ljust(STATUS_WIDTH)
+
+    # UI Indent (5 spaces) to match the "> Bag" level
+    # desc = "     " + "[NET: AWS]".ljust(STATUS_WIDTH)
+    desc = f"{' ' * 5}[NET: AWS]".ljust(15)
     file_size = os.path.getsize(tar_path)
-    
+        
     with tqdm(
         total=file_size,
         unit='B',
@@ -958,12 +993,10 @@ def upload_to_s3(tar_path, s3_bucket, s3_key, file_size, upload_limit_mb):
         )
     
     # Verify upload and get ETag
-    print("")  # Spacer line
     response = s3_client.head_object(Bucket=s3_bucket, Key=s3_key)
     etag = response.get('ETag', '').replace('"', '')
     
     return etag
-
 
 def log_upload_success(s3_key, tar_path, etag):
     """Log successful upload to the transaction log."""
@@ -982,7 +1015,11 @@ def log_upload_success(s3_key, tar_path, etag):
         )
         
         timestamp = datetime.now().strftime("%H:%M:%S")
-        print(f"  [OK] {timestamp} | Verified ETag: {etag}")
+        
+        # --- COLUMN 15 ALIGNMENT ---
+        # "     [OK : AWS]" is 13 chars. :<15 pads it with 2 spaces.
+        ok_header = f"{' ' * 5}[OK : AWS]"
+        print(f"{ok_header:<15}: {timestamp} | Verified ETag: {etag}")
         
     except Exception as e:
         etag = "VERIFY_FAILED"
@@ -994,7 +1031,9 @@ def log_upload_success(s3_key, tar_path, etag):
             {"Error": str(e)}, 
             "ERR-VFY"
         )
-
+        # Match alignment for the warning too
+        warn_header = f"{' ' * 5}[WARN]"
+        print(f"{warn_header:<15}: ETag verification failed for {s3_key}")
 
 def cleanup_files(tar_path, temp_files_to_clean):
     """Clean up temporary files after upload."""
@@ -1022,10 +1061,15 @@ def commit_to_inventory(leaf_list, branch_leaves, inventory, is_live, bag_num, e
         try:
             with open(INVENTORY_FILE, 'w') as f:
                 json.dump(inventory, f, indent=4)
-            print(f"  [SAVE] Bag {bag_num:05d} committed to inventory.")
+            
+            inv_name = os.path.basename(INVENTORY_FILE)            
+            save_header = f"{' ' * 5}[SAVE: DB]"
+            print(f"{save_header:<15}: Bag {bag_num:05d} committed to {inv_name}.")
+            
         except Exception as e:
-            print(f"  [WARN] Failed to auto-save inventory: {e}")
-
+            inv_name = os.path.basename(INVENTORY_FILE)
+            save_header = f"{' ' * 5}[WARN]"
+            print(f"{save_header:<15}: Failed to auto-save {inv_name}: {e}")
 
 # --- PROCESS_BRANCH START ---
 
@@ -1688,7 +1732,7 @@ def validate_encryption_config(tree_file):
 
 # --- Shared Helper Functions ---
 
-def prepare_staging_environment(leaf_path, leaf_id, files=None, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0):
+def prepare_staging_environment(leaf_path, leaf_id, files=None, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0, hb=None):
     """
     Prepare the staging environment for a leaf, including remote sync if needed.
     
@@ -1722,7 +1766,8 @@ def prepare_staging_environment(leaf_path, leaf_id, files=None, remote_conn=None
             if stage_remote_leaf(
                 remote_conn, remote_base_path, leaf_path, 
                 local_branch_root, leaf_stage_dir, 
-                expected_size=expected_size
+                expected_size=expected_size,
+                hb=hb
             ):
                 # SUCCESS: local_raw is now the directory we need to clean up later
                 local_raw = leaf_stage_dir
@@ -1789,7 +1834,7 @@ def run_with_heartbeat(cmd, output_path, expected_size, status, shell=True, is_d
 
 # --- Encrypt Leaf Function and Helpers ---
 
-def encrypt_leaf(leaf_path, files=None, passphrase_file=None, compress=False, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0, encryption_config=None):
+def encrypt_leaf(leaf_path, files=None, passphrase_file=None, compress=False, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0, encryption_config=None, hb=None):
     """Encrypts a leaf, potentially with compression."""
     # 1. Validate encryption configuration
     if not validate_encryption_parameters(passphrase_file, encryption_config):
@@ -1799,7 +1844,8 @@ def encrypt_leaf(leaf_path, files=None, passphrase_file=None, compress=False, re
     leaf_id = hashlib.md5(leaf_path.encode()).hexdigest()[:8]
     staging = prepare_staging_environment(
         leaf_path, leaf_id, files, remote_conn, 
-        remote_base_path, local_branch_root, expected_size
+        remote_base_path, local_branch_root, expected_size,
+        hb=hb
     )
     
     if staging is None:
@@ -1822,7 +1868,7 @@ def encrypt_leaf(leaf_path, files=None, passphrase_file=None, compress=False, re
     
     # 6. Execute encryption process
     success = execute_encryption_process(
-        tar_cmd, gpg_cmd, intermediate_file, encrypted_path, expected_size
+        tar_cmd, gpg_cmd, intermediate_file, encrypted_path, expected_size, hb=hb, compress=compress
     )
     
     # 7. Cleanup and return
@@ -1891,24 +1937,66 @@ def build_encryption_command(intermediate_file, encrypted_path, passphrase_file,
             intermediate_file
         ]
 
+def execute_encryption_process(tar_cmd, gpg_cmd, intermediate_file, encrypted_path, expected_size, hb=None, compress=False):
+    # Create a heartbeat if not provided
+    local_hb = False
+    if not hb:
+        hb = Heartbeat()
+        hb.start()
+        local_hb = True
+        
+    try:
+        # PHASE 1: TAR
+        # For TAR: update with correct target size and status
+        if not os.path.exists(intermediate_file):
+            # Create an empty file to track
+            with open(intermediate_file, 'wb') as f:
+                pass
+                
+        # Set an appropriate target size for TAR based on expected_size
+        tar_target_size = expected_size * 1.1  # Add 10% for tar overhead
+        hb.update_target(intermediate_file, "TAR: LEAF", target_size=tar_target_size, is_compressed=compress)
+        
+        # Run tar command
+        subprocess.run(tar_cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # Get actual size after TAR completion
+        actual_tar_size = os.path.getsize(intermediate_file)
+        
+        # Mark TAR as complete
+        hb.snap_done()
+        
+        # PHASE 2: GPG
+        # For GPG: target size is the actual size of the intermediate file
+        hb.update_target(encrypted_path, "GPG: LEAF", target_size=actual_tar_size)
+        
+        # Run gpg command
+        subprocess.run(gpg_cmd, shell=False, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # Mark GPG as complete
+        hb.snap_done()
+        
+        return os.path.exists(encrypted_path)
+    
+    finally:
+        # Only stop if we created it locally
+        if local_hb and hb:
+            hb.stop()
 
-def execute_encryption_process(tar_cmd, gpg_cmd, intermediate_file, encrypted_path, expected_size):
-    """Execute the two-phase encryption process with progress monitoring."""
-    # PHASE 1: Create the Tarball with Heartbeat
-    tar_success = run_with_heartbeat(
-        tar_cmd, intermediate_file, expected_size, "CPU: GPG"
-    )
+def BASICexecute_encryption_process(tar_cmd, gpg_cmd, intermediate_file, encrypted_path, expected_size, hb=None):
+    # We ignore the 'hb' (Heartbeat) entirely to stop the threading issues
     
-    if not tar_success or not os.path.exists(intermediate_file):
-        return False
-    
-    # PHASE 2: Encrypt with Heartbeat (watching the GPG output)
-    gpg_success = run_with_heartbeat(
-        gpg_cmd, encrypted_path, expected_size, "CPU: GPG", shell=False
-    )
-    
-    return gpg_success and os.path.exists(encrypted_path)
+    # PHASE 1: TAR
+    print(f"  [TAR: LEAF] : Packaging... ", end="", flush=True)
+    subprocess.run(tar_cmd, shell=True, check=True)
+    print(f"100.0% [DONE]")
 
+    # PHASE 2: GPG
+    print(f"  [GPG: LEAF] : Encrypting... ", end="", flush=True)
+    subprocess.run(gpg_cmd, shell=False, check=True)
+    print(f"100.0% [DONE]")
+    
+    return os.path.exists(encrypted_path)
 
 def cleanup_encryption_temp(intermediate_file, local_raw):
     """Clean up temporary files used during encryption."""
@@ -1920,13 +2008,14 @@ def cleanup_encryption_temp(intermediate_file, local_raw):
 
 # --- Compress Leaf Function and Helpers ---
 
-def compress_leaf(leaf_path, files=None, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0):
+def compress_leaf(leaf_path, files=None, remote_conn=None, remote_base_path=None, local_branch_root=None, expected_size=0, hb=None):
     """Creates a compressed archive of a leaf."""
     # 1. Prepare environment
     leaf_id = hashlib.md5(leaf_path.encode()).hexdigest()[:8]
     staging = prepare_staging_environment(
         leaf_path, leaf_id, files, remote_conn, 
-        remote_base_path, local_branch_root, expected_size
+        remote_base_path, local_branch_root, expected_size,
+        hb=hb
     )
     
     if staging is None:
@@ -1942,9 +2031,14 @@ def compress_leaf(leaf_path, files=None, remote_conn=None, remote_base_path=None
     )
     
     # 4. Execute compression with heartbeat
-    success = run_with_heartbeat(
-        cmd, compressed_path, expected_size, "DISK: TAR"
-    )
+    if hb:
+        hb.update_target(compressed_path, new_status="TAR: LEAF", is_compressed=True)
+        subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL)
+        success = True
+    else:
+        success = run_with_heartbeat(
+            cmd, compressed_path, expected_size, "TAR: LEAF"
+        )
     
     # 5. Cleanup and return
     if staging["local_raw"] and os.path.exists(staging["local_raw"]):
@@ -2322,11 +2416,9 @@ def find_leaf_owner(file_path, inventory):
                     
     return best_leaf, best_branch
 
-def stage_remote_leaf(remote_conn, remote_base_path, local_leaf_path, local_branch_root, stage_dir, expected_size=0):
+def stage_remote_leaf(remote_conn, remote_base_path, local_leaf_path, local_branch_root, stage_dir, expected_size=0, hb=None):
     """
-    Staging with Heartbeat-monitored rsync.
-    Includes DYNAMIC EXCLUDE REWRITING to handle relative path mismatches.
-    Uses subprocess.run to correctly capture rsync errors.
+    Staging with clean progress display while monitoring rsync.
     """
     # 1. Calculate the subpath
     prefix = local_branch_root.rstrip('/') + '/'
@@ -2338,9 +2430,9 @@ def stage_remote_leaf(remote_conn, remote_base_path, local_leaf_path, local_bran
     remote_path_safe = shlex.quote(f"{remote_base}/{subpath}".rstrip('/'))
     true_remote_src = f"{remote_conn}:{remote_path_safe}"
 
-    # 3. Initialize Heartbeat
-    hb = Heartbeat(stage_dir, expected_size, status="NET: RSYNC", is_dir=True)
-    hb.start()
+    # Create the staging directory if it doesn't exist
+    if not os.path.exists(stage_dir):
+        os.makedirs(stage_dir)
 
     # --- Context-Aware Exclude Logic ---
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -2377,37 +2469,138 @@ def stage_remote_leaf(remote_conn, remote_base_path, local_leaf_path, local_bran
             exclude_args = ['--exclude-from', temp_exclude_path]
     # -----------------------------------
 
-    # 4. Build the rsync command 
-    cmd = ['rsync', '-a', '--delete', '--inplace', '-e', 'ssh']
+    # 3. Build the rsync command
+    # Using --info=progress2 for a more machine-readable progress format
+    cmd = ['rsync', '-a', '--delete', '--inplace', '--info=progress2', '-e', 'ssh']
     if exclude_args: cmd.extend(exclude_args)
     cmd.extend([f"{true_remote_src}/", f"{stage_dir}/"])
 
+    # 4. Start the process with pipe for stdout
+    start_time = time.time()
+    last_update = time.time()
+    
     try:
-        # UPDATED: Use subprocess.run with capture_output=True
-        # This prevents the deadlock risk of check_call+PIPE and actually captures stderr
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        # Run the process with pipes for stdout/stderr
+        process = subprocess.Popen(
+            cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1  # Line buffered
+        )
+        
+        # Variables to track progress
+        current_bytes = 0
+        total_bytes = 0  # Unknown initially
+        transfer_speed = 0
+        
+        while process.poll() is None:
+            # Read output without blocking
+            line = process.stdout.readline().strip()
+            if line:
+                # Try to parse rsync's info=progress2 format
+                # Format: "    14,648,320  16%   23.50MB/s    0:00:48"
+                parts = line.split()
+                if len(parts) >= 3:
+                    try:
+                        # The first part is bytes transferred (with commas)
+                        bytes_str = parts[0].replace(',', '')
+                        current_bytes = int(bytes_str)
+                        
+                        # Speed is typically the third part (with MB/s or KB/s)
+                        speed_str = parts[2]
+                        if speed_str.endswith('MB/s'):
+                            transfer_speed = float(speed_str[:-4]) * 1024 * 1024
+                        elif speed_str.endswith('KB/s'):
+                            transfer_speed = float(speed_str[:-4]) * 1024
+                        elif speed_str.endswith('B/s'):
+                            transfer_speed = float(speed_str[:-3])
+                            
+                        # If there's a percentage, extract total bytes
+                        if "%" in line:
+                            percent_str = parts[1].replace('%', '')
+                            percent = float(percent_str)
+                            if percent > 0:
+                                total_bytes = int(current_bytes * 100 / percent)
+                        
+                        # Only update display every 0.5 seconds to avoid flicker
+                        if time.time() - last_update > 0.5:
+                            # Format display
+                            current_str = format_bytes(current_bytes)
+                            speed_str = format_bytes(transfer_speed) + "/s"
+
+                            # --- COLUMN 15 ALIGNMENT ---
+                            # 7 spaces + [RSYNC] = 14 chars. :<15 puts the colon at Col 15.
+                            header = f"{' ' * 7}[RSYNC]"
+                            full_header = f"{header:<15}:"
+                            
+                            # If we have total bytes, show progress and ETA
+                            if total_bytes > 0:
+                                total_str = format_bytes(total_bytes)
+                                percent = min(100.0, (current_bytes / total_bytes) * 100)
+                                
+                                # Calculate ETA
+                                eta_str = "--:--"
+                                if transfer_speed > 0 and current_bytes < total_bytes:
+                                    seconds_left = (total_bytes - current_bytes) / transfer_speed
+                                    if seconds_left > 0:
+                                        m, s = divmod(int(seconds_left), 60)
+                                        h, m = divmod(m, 60)
+                                        eta_str = f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+                                
+                                progress_line = f"{full_header} {percent:5.1f}% transferring [{current_str}/{total_str}] @ {speed_str} | ETA: {eta_str}"
+                            else:
+                                progress_line = f"{full_header} {current_str} transferring @ {speed_str}"
+                            
+                            sys.stdout.write(f"\r{progress_line:<110}")
+                            sys.stdout.flush()
+                            last_update = time.time()
+                    except (ValueError, IndexError):
+                        # Not a progress line, ignore
+                        pass
+            else:
+                # No new output, sleep briefly
+                time.sleep(0.1)
+        
+        # Process finished, get exit code
+        exit_code = process.returncode
+        
+        # Calculate total time
+        elapsed_seconds = time.time() - start_time
+        if elapsed_seconds >= 3600:
+            elapsed_str = f"{int(elapsed_seconds // 3600):02d}:{int((elapsed_seconds % 3600) // 60):02d}:{int(elapsed_seconds % 60):02d}"
+        else:
+            elapsed_str = f"{int(elapsed_seconds // 60):02d}:{int(elapsed_seconds % 60):02d}"
+        
+        final_size = get_tree_size(stage_dir)
+        size_str = format_bytes(final_size)
+
+        # COLUMN 15 ALIGNMENT
+        header = f"{' ' * 7}[RSYNC]"
+        full_header = f"{header:<15}:"
+
+        sys.stdout.write(f"\r{full_header} [DONE in {elapsed_str}] - {size_str} transferred{'':80}\n")
+        sys.stdout.flush()
+        
+        # Check exit code
+        if exit_code != 0:
+            stderr_output = process.stderr.read()
+            if exit_code == 23:
+                print(f"\n[WARN] Partial transfer (Code 23) for {local_leaf_path}.")
+                print(f"       Last error: {stderr_output.strip().splitlines()[-1] if stderr_output else 'Unknown'}")
+                return False
+            else:
+                print(f"\n[ERROR] Sync failed for {local_leaf_path}: {stderr_output}")
+                return False
+        
         return True
         
-    except subprocess.CalledProcessError as e:
-        # Now e.stderr will actually contain the text!
-        err_msg = e.stderr if e.stderr else str(e)
-        
-        # Filter out harmless Code 24 (Vanished files) if you want, 
-        # but for Code 23 we want to see it.
-        if e.returncode == 23:
-            print(f"\n[WARN] Partial transfer (Code 23) for {local_leaf_path}.")
-            # Print the last few lines of error to help debug
-            print(f"       Last error: {err_msg.strip().splitlines()[-1] if err_msg else 'Unknown'}")
-            # If you want to FAIL on partials, return False. 
-            # If you want to ALLOW partials (ignore permission errors), return True.
-            return False 
-            
-        print(f"\n[ERROR] Sync failed for {local_leaf_path}: {err_msg}")
+    except Exception as e:
+        print(f"\n[ERROR] Failed to run rsync: {e}")
         return False
         
     finally:
-        hb.stop()
-        hb.join()
+        # Clean up temporary exclude file
         if temp_exclude_path and os.path.exists(temp_exclude_path):
             os.remove(temp_exclude_path)
 
@@ -2776,7 +2969,7 @@ def is_action_permitted(branch_line, action):
     
     Actions:
     - MIRROR:  Standard synchronization of local files to S3 (Soft Mirror).
-    - FORCE:   Destructive reset of S3/Inventory state before a fresh mirror (Hard Mirror).
+    - FORCE:    Destructive reset of S3/Inventory state before a fresh mirror (Hard Mirror).
     - DELETE:  Permanent removal of data from S3 and the local inventory database.
     - REPACK:  Optimization of existing bags to reduce storage waste.
     """
@@ -3413,30 +3606,35 @@ def perform_restore_orchestration(restore_jobs, config, passphrase_file):
 def cleanup_staging_dir(staging_path):
     """
     Removes orphaned temp files and directories from previous runs.
-    Targets specific prefixes to avoid touching non-glacier files.
+    Only prints output if items are actually found and removed.
     """
     if not os.path.exists(staging_path):
         return
+        
+    # 1. Identify all matching items first
+    patterns = ["comp_*", "stage_*", "enc_*", "bundle_*", "*.tar"]
+    items_to_delete = []
+    
+    for pattern in patterns:
+        full_pattern = os.path.join(staging_path, pattern)
+        items_to_delete.extend(glob.glob(full_pattern))
+
+    # 2. Only proceed with printing if there's work to do
+    if not items_to_delete:
+        return # Silent exit for a clean terminal
 
     print(f"  [INIT] Clearing staging directory: {staging_path}")
-    # Patterns cover: rsync subdirs, partial GPG, partial TARs, and intermediate bundles
-    patterns = ["comp_*", "stage_*", "enc_*", "bundle_*", "*.tar"]
-    
     deleted_count = 0
+    
     try:
-        for pattern in patterns:
-            full_pattern = os.path.join(staging_path, pattern)
-            for item in glob.glob(full_pattern):
-                if os.path.isdir(item):
-                    shutil.rmtree(item) # Recursively remove subdirs
-                else:
-                    os.remove(item)     # Remove flat files
-                deleted_count += 1
+        for item in items_to_delete:
+            if os.path.isdir(item):
+                shutil.rmtree(item)
+            else:
+                os.remove(item)
+            deleted_count += 1
         
-        if deleted_count > 0:
-            print(f"  [OK] Cleaned {deleted_count} orphaned items.")
-        else:
-            print(f"  [OK] Staging is already clean.")
+        print(f"  [OK] Cleaned {deleted_count} orphaned items.")
             
     except Exception as e:
         print(f"  [WARN] Startup cleanup encountered an issue: {e}")
