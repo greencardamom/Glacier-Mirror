@@ -24,14 +24,13 @@ Check out [Tape Backup Cost Analysis](tape-cost-analysis.md) to determine when b
 1. [Introduction](#1-introduction-the-tape-backup-insurance-policy)
 2. [Features](#2-features)
 3. [Prerequisites & Dependencies](#3-prerequisites--dependencies)
-4. [AWS Configuration Guide](#4-aws-configuration-guide)
+4. [Install & Test](#4-install--test)
 5. [Configuration Files](#5-configuration-files)
-6. [Quick Start](#6-quick-start)
-7. [Operations](#7-operations)
-8. [Automation](#8-automation)
-9. [Advanced Features](#9-advanced-features)
-10. [Recovery](#10-recovery)
-11. [Appendix: Manual File Extraction](#11-appendix-manual-file-extraction)
+6. [Operations](#6-operations)
+7. [Automation](#7-automation)
+8. [Advanced Features](#8-advanced-features)
+9. [Recovery](#9-recovery)
+10. [Appendix: Manual File Extraction](#10-appendix-manual-file-extraction)
 
 ---
 
@@ -104,55 +103,51 @@ Before running the system, ensure the following are installed:
 
 ---
 
-## 4. AWS Configuration Guide
+## 4. Install & Test
 
-Setup Glacier Deep Archive on AWS
-
-### Step 0: Account & CLI Installation
-1.  **Sign Up:** Create an account at [aws.amazon.com](https://aws.amazon.com).
-2.  **Install CLI:** Install the official AWS Command Line Interface.
-    * **Linux:** https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
-
-### Step 1: Create the Bucket
-1.  Log in to the **AWS Console** and search for **S3**.
-2.  Click **Create bucket**.
-3.  **Bucket Name:** Choose a unique name (e.g., `my-bucket`). *Update glacier.cfg.*
-4.  **Region:** Choose the region closest to you (e.g., `US East (N. Virginia) us-east-1`).
-5.  **Block Public Access:** Ensure "Block all public access" is CHECKED (Default).
-6.  Click **Create bucket**.
-
-### Step 2: Create an IAM User
-1.  Search for **IAM** (Identity and Access Management) in the console.
-2.  Click **Users** -> **Create user**.
-3.  Name: `glacier-backup-bot` (or similar). 
-4.  **Permissions:** Select "Attach policies directly" and choose **AmazonS3FullAccess**.
-    * *Note: For tighter security, you can create a custom policy limited to just one bucket.*
-5.  Finish creating the user.
-
-### Step 3: Generate Access Keys
-1.  Click on the newly created user.
-2.  Go to the **Security credentials** tab.
-3.  Scroll to **Access keys** and click **Create access key**.
-4.  Select **Command Line Interface (CLI)**.
-5.  **Copy** the `Access Key ID` and `Secret Access Key`. (Save these! You cannot see the secret again).
-
-### Step 4: Add rule to delete incomplete uploads
-This will save you money - if an upload is aborted it can leave temporary fragments in the bucket
-1. Go to AWS Console -> S3 -> Your Bucket.
-2. Click Management tab.
-3. Click Create lifecycle rule.
-4. Name: "Clean Incomplete Uploads".
-5. Scope: Apply to all objects.
-6. Under "Lifecycle rules actions", check Delete expired object delete markers or incomplete multipart uploads.
-7. Check Delete incomplete multipart uploads and set it to 7 days.
-
-### Step 5: Configure the System
-Run this command on your Linux machine and paste in the keys from `Step 3` when prompted:
-```bash
-aws configure
-```
-* **Region:** Use the same region code from Step 1 (e.g., `us-east-1`).
-* **Output format:** `json`.
+* **Download and install the repo and dependencies**
+  * **Step 1**: Run `git clone https://github.com/greencardamom/Glacier-Mirror`
+  * **Step 2**: Run `pip install boto3 tqdm`
+* **Create AWS Deep Storage bucket**
+  * Follow the directions at [AWS Setup](aws-setup.md)
+* **Edit glacier.cfg (see all options elsewhere in this doc)**
+  * Change your directory paths and `s3_bucket` name. 
+  * Set `target_bag_gb` to 1 GB initially.
+* **Make and populate test directories**
+  * **Bash**: `mkdir -p glacier-test/{A,B,C} && for d in A B C; do fallocate -l 400M glacier-test/$d/test_data.bin; done`
+    * *Note: this will create directories off your CWD called glacier-test/A B and C each with a 400MB test_data.bin*
+* **Create `tree.cfg` with a branch**
+  * Add this line to `tree.cfg`: 
+    * `/absolute/path/to/glacier-test ::MUTABLE`
+* **Make a "Dry Run"**
+  * Use this to check what *would* happen without uploading anything.
+    * **Dry-run**: `./glacier.py --mirror-tree`
+    * **Output:** The script will print the plan to the screen, showing how it would pack A, B, and C into specific bags. It does not modify or upload any files.
+* **Make a "Real Run"** 
+  * Use this to actually upload files and update the master `inventory.json`
+    * **Live Run**: `./glacier.py --mirror-tree --run`
+    * **Output:** Updates `inventory.json` and uploads `.tar` files to S3.
+      *Note: There is an S3 cost for this test. Due to the 180-day minimum retention policy, you will be billed for 6 months of storage upon deletion. For the 1.2GB if this test it will total less than $0.01.*
+* **View results**
+  * Try out various commands to view results
+    * `./glacier-mirror --report`
+    * `./glacier-mirror --show-tree`
+    * `./glacier-mirror --show-branch [branch name]` 
+      * *[branch name] is found in `--show-tree`*
+    * `./glacier-mirror --show-bag [bag name]`
+      * *[bag name] is found in `--show-branch`*
+    * `more inventory.json`
+      * View the database and its elements.
+    * `./glacier.py --mirror-branch [branch name] --force-reset --run`
+      * Force a re-run of a branch
+* **Cleanup**
+  * To cleanup after the test. **Important** to avoid latent charges from Amazon.
+  * **Purge from S3 & Inventory**: This command will delete the S3 objects associated with this branch and remove the entry from `inventory.json`.
+    * `./glacier.py --delete-branch '/absolute/path/to/glacier-test' --run`
+    * *Note: Ensure the path matches exactly what you put in `tree.cfg` not including any ::TAGS*
+  * **Remove Local Files**: Delete the dummy data.
+    * `rm -rf glacier-test`
+  * **Update Config**: Open `tree.cfg` and remove the line you added earlier.
 
 ---
 
@@ -311,44 +306,7 @@ These files provide a searchable list of every single file inside every bag. Whi
 
 ---
 
-## 6. Quick Start
-
-How to test the system.
-
-### Step 1: Update glacier.cfg (see options above)
-* Update the directory paths and `s3_bucket`. Set `target_bag_gb` to 1 GB for this test.
-
-### Step 2: Make and populate test directories
-* **Bash**: `mkdir -p glacier-test/{A,B,C} && for d in A B C; do fallocate -l 400M glacier-test/$d/test_data.bin; done`
-  *Note: this will create directories off your CWD called glacier-test/A B and C each with a 400MB test_data.bin*
-
-### Step 3: Create `tree.cfg` with a branch
-* Add this line to `tree.cfg`: `/absolute/path/to/glacier-test ::MUTABLE`
-
-### Step 4: The "Dry Run" (Simulation)
-Use this to check what *would* happen without uploading anything.
-* **Dry-run**: `./glacier.py --mirror-tree`
-* **Output:** The script will print the plan to the screen, showing how it packs A, B, and C into specific bags. It does not modify any files.
-
-### Step 5: The "Real Run" 
-Use this to actually upload files and update the master inventory.json
-* **Live Run**: `./glacier.py --mirror-tree --run`
-* **Output:** Updates `inventory.json` and uploads `.tar` files to S3.
-  *Note: There is an S3 cost for this test. Due to the 180-day minimum retention policy, you will be billed for 6 months of storage upon deletion, but for 1.2GB this totals less than $0.01.*
-
-### Step 6: Cleanup
-To cleanup after the test. **Important** to avoid any latent charges from Amazon.
-
-* **Purge from S3 & Inventory**: This command will delete the S3 objects associated with this branch and remove the entry from `inventory.json`.
-  * `./glacier.py --delete-branch '/absolute/path/to/glacier-test' --run`
-  * *Note: Ensure the path matches exactly what you put in `tree.cfg` not including any ::TAGS*
-* **Remove Local Files**: Delete the dummy data.
-  * `rm -rf glacier-test`
-* **Update Config**: Open `tree.cfg` and remove the line you added in Step 3.
-
----
-
-## 7. Operations
+## 6. Operations
 
 Operation features and methods
 
@@ -488,7 +446,7 @@ Options for optimizing storage, managing bandwidth, and system cleanup.
     * **Without `--run`**: The system runs in DRY RUN mode. It calculates hashes, checks S3, and prints exactly what it would do (e.g., "Uploading X", "Deleting Y"), but performs zero network actions or inventory writes.
     * **With `--run`**: The system executes the plan, uploads files, deletes objects, and updates inventory.json.
 
-## 8. Automation
+## 7. Automation
 
 * `--cron`
   * **Description**: Suitable for automated scheduling with `crontab`.
@@ -530,7 +488,7 @@ Use `--interval` if you want to process different branches at different cadences
 
 ---
 
-## 9. Advanced Features
+## 8. Advanced Features
 
 ### Encryption
 Glacier supports GPG encryption using the GPG program.
@@ -572,7 +530,7 @@ There are two options for storing your password. One is easier and less secure; 
 
 ---
 
-## 10. Recovery
+## 9. Recovery
 
 The system includes restore functions.
 
@@ -642,7 +600,7 @@ chmod +x glacier.py
 Amazon has a service called "Snowball" where they send you a computer with your data on a hard drive. You copy it and send the computer back. The break-even point for this service is around 6TB (as of 2026). If you need to download a large amount and don't want to saturate your network Snowball can be cheaper and faster.
 
 
-## 11. Appendix: Manual File Extraction
+## 10. Appendix: Manual File Extraction
 **IMPORTANT:** Use the `-S` flag to handle sparse files efficiently. This is particularly critical for VM images.
 ```bash
 tar -Sxvf rabbit_host-agros_bag_003.tar -C /home/user/Backup
