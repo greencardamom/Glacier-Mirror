@@ -558,7 +558,7 @@ The restore commands are state-aware. You run the same command to initiate a tha
  * **`--to PATH`**: Required. The destination directory for recovered files.
  * **`--tier [Standard|Bulk]`**:
     * **Standard (Default)**: Faster (12 hours). 
-    * **Bulk**: Cheaper by about 8 times than Standard, but slower (48 hours).
+    * **Bulk**: Cheaper by about 16% from Standard, but slower (48 hours).
 
 ### Bootstrap
 Restoration of Glacier Mirror and all data file on a new machine
