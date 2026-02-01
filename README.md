@@ -72,10 +72,10 @@ The bags are uploaded to Glacier. The local leaves are monitored for changes, an
 * **State-Aware Recovery**: Automates the "Thaw, Download, Decrypt, and Extract" pipeline with a single command.
 * **Logging**: Maintains a ledger of every AWS transaction and byte transferred for full accountability.
 * **Flexible Scheduling**: Supports flexible mirroring intervals (e.g., "Every 190 Days" or "Every 480 Days") set on a per-branch basis.
-* **Vendor Neutral**: Program is a single Python script. Stores data in standard GNU Tar and GPG formats, ensuring files can always be recovered without this software.
-* **Total Recovery**: Keeps a copy of all programs and metadata on S3 so entire system can be recreated from scratch on a new machine.
+* **Vendor Neutral**: Program is a single Python script. Stores data in standard GNU Tar and GPG formats, ensuring files can always be recovered without this software. The database is a single JSON file.
+* **Total Recovery**: Keeps a backup copy of the program and metadata on S3 hot drives so the entire system can be easily reconstituted from scratch on a new machine.
 * **Intelligent Design**: Designed and written in collaboration with AI and a professional programmer.
-* **Dry Run mode**: Program prints exactly what it would do but performs zero network actions or inventory writes. Default.
+* **Dry Run mode**: Program by default prints exactly what it *would* do but performs zero network actions or inventory writes. Use `--run` when ready to commit.
 
 ---
 
