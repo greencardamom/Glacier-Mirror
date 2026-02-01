@@ -356,7 +356,7 @@ def generate_real_manifest(bag_name, leaf_definitions, is_live):
 
 def upload_system_artifacts():
     """Backs up the code, config, and brain to S3. Enforces a strict mirror (deletes old files)."""
-    print("\n--- System Artifact Backup ---")
+    print("\n--- System Backup ---")
     
     # 1. Define the Canonical List of system files to backup
     sys_files = ["glacier.py", "prune.py", "glacier.cfg", DEFAULT_TREE_FILE, "inventory.json", "README.md", "requirements.txt", "exclude.txt"]
