@@ -75,7 +75,7 @@ The bags are uploaded to Glacier. The local leaves are monitored for changes, an
 * **Vendor Neutral**: Program is a single Python script. Stores data in standard GNU Tar and GPG formats, ensuring files can always be recovered without this software. The database is a single JSON file.
 * **Total Recovery**: Keeps a backup copy of the program and metadata on S3 hot drives so the entire system can be easily reconstituted from scratch on a new machine.
 * **Intelligent Design**: Designed and written in collaboration with AI and a professional programmer.
-* **Dry Run mode**: Program by default prints exactly what it *would* do but performs zero network actions or inventory writes. Use `--run` when ready to commit.
+* **Dry Run default**: Program by default prints exactly what it *would* do but performs zero network actions or inventory writes. Use `--run` when ready to commit.
 
 ---
 
@@ -480,10 +480,10 @@ Use `--interval` if you want to process different branches at different cadences
 
 ```bash
 # Branch 1: "Work" - Runs every 6 months
-0 2 * 1,7 * cd /path/to/glacier && ./glacier.py --mirror-branch '/path/to/work' --cron --interval 180 --run >> /path/to/glacier/logs/work_backup.log 2>&1
+0 2 * * * cd /path/to/glacier && ./glacier.py --mirror-branch '/path/to/work' --cron --interval 180 --run >> /path/to/glacier/logs/work_backup.log 2>&1
 
 # Branch 2: "Mediafiles" - Runs every 2 years
-0 5 * 6 * cd /path/to/glacier && ./glacier.py --mirror-branch '/path/to/mediafiles' --cron --interval 730 --run >> /path/to/glacier/media_backup.log 2>&1
+0 2 * * * cd /path/to/glacier && ./glacier.py --mirror-branch '/path/to/mediafiles' --cron --interval 730 --run >> /path/to/glacier/media_backup.log 2>&1
 ```
 
 ---
