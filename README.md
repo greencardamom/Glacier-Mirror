@@ -16,9 +16,9 @@ See LICENSE.md for more details.
 **Created:** January 2026  
 **Author:** Greenc
 
-A Python tool for mirroring your backups on Amazon's S3 "Glacier" Deep Archive. Maximize cost savings. Cheaper than buying a tape drive youself, and definitely easier and more secure.
+A Python tool for mirroring your backups on Amazon's S3 "Glacier" Deep Archive. For many people (1 to 50 TB) cloud-based tape backup is cheaper than buying a tape drive youself, and definitely easier and more secure.
 
-Check out [Tape Backup Cost Analysis](tape-cost-analysis.md) to determine when buying your own tape drive becomes cost-effective. Until then, cloud-based backup on tape is an affordable option. 
+Check out [Tape Backup Cost Analysis](tape-cost-analysis.md) to determine when buying your own tape drive becomes cost-effective (at about 50TB). Until then, cloud-based backup on tape is a very good option. This Python script makes it easy to manage.
 
 ## Table of Contents
 1. [Introduction](#1-introduction-the-tape-backup-insurance-policy)
