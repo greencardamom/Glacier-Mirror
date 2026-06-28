@@ -64,6 +64,8 @@ if not os.path.exists(config_path):
 
 config.read(config_path)
 
+IS_TTY = sys.stdout.isatty()
+
 # AWS metadata function (kept in same position as required)
 def ensure_aws_metadata(config):
     """
@@ -187,8 +189,9 @@ class Heartbeat(threading.Thread):
                         pct = min(99.9, (current / self.target_size) * 100) if self.target_size > 0 else 0
                         line = f"{full_header} {pct:5.1f}% {self.verb_active} [{done_str}/{format_bytes(self.target_size)}] @ {speed_str}"
 
-                    sys.stdout.write(f"\r{line:<120}")
-                    sys.stdout.flush()
+                    if IS_TTY:
+                        sys.stdout.write(f"\r{line:<120}")
+                        sys.stdout.flush()
                 except: pass
             time.sleep(0.1)
 
@@ -239,7 +242,8 @@ class Heartbeat(threading.Thread):
         else:
             final_msg = f"100.0% {self.verb_past} [DONE | {elapsed_str}]"
 
-        sys.stdout.write(f"\r{full_header} {final_msg}{' ':40}\n")
+        prefix = "\r" if IS_TTY else ""
+        sys.stdout.write(f"{prefix}{full_header} {final_msg}\n")
         sys.stdout.flush()
 
     def stop(self):
@@ -269,7 +273,7 @@ def get_metadata_hash(directory, recursive=True, file_list=None):
     total_size = 0
     file_count = 0
     
-    pbar = tqdm(desc="  Scanning metadata", unit=" files", leave=False)
+    pbar = tqdm(desc="  Scanning metadata", unit=" files", leave=False, disable=not IS_TTY)
 
     if file_list:
         for name in sorted(file_list):
@@ -326,7 +330,7 @@ def generate_real_manifest(bag_name, leaf_definitions, is_live):
     try:
         if not os.path.exists(MANIFEST_DIR): os.makedirs(MANIFEST_DIR)
         
-        pbar = tqdm(desc=f"  Building Manifest", unit=" files", leave=False)
+        pbar = tqdm(desc=f"  Building Manifest", unit=" files", leave=False, disable=not IS_TTY)
         
         with open(manifest_path, "w") as f:
             f.write(f"# Manifest for {bag_name}\n")
@@ -980,7 +984,8 @@ def upload_to_s3(tar_path, s3_bucket, s3_key, file_size, upload_limit_mb):
         unit_scale=True,
         leave=True,
         ncols=100,
-        bar_format="{desc}{percentage:5.1f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]"
+        bar_format="{desc}{percentage:5.1f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+        disable=not IS_TTY,
     ) as pbar:
         pbar.set_description(desc)
         s3_client.upload_file(
@@ -2552,8 +2557,9 @@ def stage_remote_leaf(remote_conn, remote_base_path, local_leaf_path, local_bran
                             else:
                                 progress_line = f"{full_header} {current_str} transferring @ {speed_str}"
                             
-                            sys.stdout.write(f"\r{progress_line:<110}")
-                            sys.stdout.flush()
+                            if IS_TTY:
+                                sys.stdout.write(f"\r{progress_line:<110}")
+                                sys.stdout.flush()
                             last_update = time.time()
                     except (ValueError, IndexError):
                         # Not a progress line, ignore
@@ -2579,7 +2585,8 @@ def stage_remote_leaf(remote_conn, remote_base_path, local_leaf_path, local_bran
         header = f"{' ' * 7}[RSYNC]"
         full_header = f"{header:<15}:"
 
-        sys.stdout.write(f"\r{full_header} [DONE | {elapsed_str}] - {size_str} transferred{'':80}\n")
+        prefix = "\r" if IS_TTY else ""
+        sys.stdout.write(f"{prefix}{full_header} [DONE | {elapsed_str}] - {size_str} transferred\n")
         sys.stdout.flush()
         
         # Check exit code
@@ -3067,7 +3074,7 @@ def get_tree_size(path):
         pass
     return total
 
-def run_smart_cron(inventory, tree_lines, config, args, encryption_config=None):
+def run_smart_cron(inventory, tree_lines, config, args, encryption_config=None, passphrase_file=None):
     """
     Rolling Scheduler: Checks 'last_scan' of each branch.
     Only processes branches that have been dormant for > INTERVAL days.
@@ -3082,7 +3089,7 @@ def run_smart_cron(inventory, tree_lines, config, args, encryption_config=None):
     eligible_branches = find_eligible_branches(inventory, tree_lines, interval_days)
     
     # Process eligible branches
-    return process_eligible_branches(eligible_branches, inventory, tree_lines, args, encryption_config)
+    return process_eligible_branches(eligible_branches, inventory, tree_lines, args, encryption_config, passphrase_file)
 
 
 def get_scan_interval(config):
@@ -3170,7 +3177,7 @@ def is_branch_due_for_scan(inventory, branch_line, interval_days, current_time=N
         return True, "[ERROR] Invalid date format in inventory"
 
 
-def process_eligible_branches(eligible_branches, inventory, tree_lines, args, encryption_config):
+def process_eligible_branches(eligible_branches, inventory, tree_lines, args, encryption_config, passphrase_file=None):
     """
     Process branches that are eligible for scanning.
     
@@ -3212,7 +3219,7 @@ def process_eligible_branches(eligible_branches, inventory, tree_lines, args, en
             args.run, 
             args.limit, 
             False,  # is_repack
-            PASSPHRASE_FILE,
+            passphrase_file,
             encryption_config
         )
         
@@ -3270,7 +3277,7 @@ def get_restore_targets(args, inventory):
 
         manifests = [f for f in os.listdir(MANIFEST_DIR) if f.endswith(".txt")]
         
-        for manifest in tqdm(manifests, desc="  Scanning Manifests", unit="file", leave=False):
+        for manifest in tqdm(manifests, desc="  Scanning Manifests", unit="file", leave=False, disable=not IS_TTY):
             try:
                 path = os.path.join(MANIFEST_DIR, manifest)
                 with open(path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -3577,7 +3584,7 @@ def perform_restore_orchestration(restore_jobs, config, passphrase_file):
             try:
                 # Visual download bar
                 file_size = s3_client.head_object(Bucket=s3_bucket, Key=key)['ContentLength']
-                with tqdm(total=file_size, unit='B', unit_scale=True, desc="  Downloading") as pbar:
+                with tqdm(total=file_size, unit='B', unit_scale=True, desc="  Downloading", disable=not IS_TTY) as pbar:
                     s3_client.download_file(
                         s3_bucket, 
                         key, 
@@ -4151,7 +4158,11 @@ def main():
             
         # --- CRON EXECUTION ---
         if args.cron:
-            work_was_performed = run_smart_cron(inventory, tree_lines, config, args, encryption_config)
+            if not IS_TTY:
+                print(f"\n{'='*60}")
+                print(f"  Glacier Mirror cron run: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"{'='*60}")
+            work_was_performed = run_smart_cron(inventory, tree_lines, config, args, encryption_config, PASSPHRASE_FILE)
         else:
             # Standard Loop (non-cron)
             for line in tree_lines:
