@@ -54,6 +54,17 @@ from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from boto3.s3.transfer import TransferConfig # Added for throttling
 
+
+class LeafStagingError(Exception):
+    """Raised when a leaf cannot be staged/encrypted, so a bag cannot be built.
+
+    This is a *recoverable* per-bag failure: the offending bag is skipped and
+    reported, but the cron run continues with the remaining bags and branches
+    instead of aborting the entire backup.
+    """
+    pass
+
+
 # Configuration handling
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'glacier.cfg')
 config = configparser.ConfigParser()
@@ -503,6 +514,17 @@ def generate_summary(inventory, run_stats, is_live):
     if not is_live:
         print(f"\n[DRY RUN] Repack Risk shows the maximum early deletion fee if all data is < {min_days} days old.")
 
+    # --- FAILED BAGS ---
+    all_failures = []
+    for s in run_stats.values():
+        all_failures.extend(s.get('failures', []))
+    if all_failures:
+        print("\n" + "!"*105)
+        print(f"[WARNING] {len(all_failures)} bag(s) failed to stage and were skipped (will retry next run):")
+        for f in all_failures:
+            print(f"  - {f}")
+        print("!"*105)
+
 # --- PROCESSING ---
 
 def construct_tar_command(tar_path, leaf_list, branch_root, designator, passphrase_file, branch_leaves, remote_conn, remote_base_path, excludes=None, encryption_config=None, hb=None):
@@ -528,12 +550,21 @@ def construct_tar_command(tar_path, leaf_list, branch_root, designator, passphra
         hb=hb
     )
     
-    # 3. Optimize tar arguments for efficiency
+    # 3. Guard against an empty archive: if no leaf produced any content,
+    #    tar would fail with "Cowardly refusing to create an empty archive".
+    #    Surface it as a recoverable per-bag error instead of a fatal crash.
+    if not tar_sequence:
+        raise LeafStagingError(
+            f"No content staged for {os.path.basename(tar_path)} "
+            f"({len(leaf_list)} leaf/leaves) — refusing to build an empty archive."
+        )
+
+    # 4. Optimize tar arguments for efficiency
     optimized_args = optimize_tar_arguments(tar_sequence)
-    
-    # 4. Generate the final command
+
+    # 5. Generate the final command
     cmd = generate_final_tar_command(tar_path, exclude_args, optimized_args)
-    
+
     return cmd, temp_files_to_clean
 
 
@@ -668,6 +699,13 @@ def process_encrypted_leaf(leaf, branch_root, rel_path, passphrase_file, needs_c
         tar_sequence.append((STAGING_DIR, arg))
         branch_leaves[leaf['key']]['encrypted'] = True
         branch_leaves[leaf['key']]['compressed'] = needs_compress
+    else:
+        # Staging/encryption failed (e.g. an rsync broken pipe). Do not silently
+        # drop the leaf and let an empty bag escalate into a fatal tar error.
+        raise LeafStagingError(
+            f"Failed to stage/encrypt leaf '{leaf['path']}' "
+            f"(remote sync or encryption did not complete)."
+        )
 
 
 def process_compressed_leaf(leaf, branch_root, rel_path, remote_conn, remote_base_path,
@@ -694,6 +732,13 @@ def process_compressed_leaf(leaf, branch_root, rel_path, remote_conn, remote_bas
         tar_sequence.append((STAGING_DIR, arg))
         branch_leaves[leaf['key']]['compressed'] = True
         branch_leaves[leaf['key']]['encrypted'] = False
+    else:
+        # Staging/compression failed (e.g. an rsync broken pipe). Do not silently
+        # drop the leaf and let an empty bag escalate into a fatal tar error.
+        raise LeafStagingError(
+            f"Failed to stage/compress leaf '{leaf['path']}' "
+            f"(remote sync or compression did not complete)."
+        )
 
 
 def process_standard_leaf(leaf, branch_root, branch_leaves, tar_sequence):
@@ -963,6 +1008,12 @@ def build_tar_archive(tar_path, leaf_list, branch_root, designator, passphrase_f
         print(f"\n[FATAL] Tar failed: {e.stderr.decode() if e.stderr else str(e)}")
         raise e
 
+    except LeafStagingError:
+        # A leaf failed to stage; stop the heartbeat thread and let the
+        # bag-level handler skip this bag and continue the run.
+        hb.stop()
+        raise
+
 def upload_to_s3(tar_path, s3_bucket, s3_key, file_size, upload_limit_mb):
     """
     Upload the tar file to S3 with progress tracking.
@@ -1085,7 +1136,8 @@ def process_branch(branch_line, inventory, run_stats, is_live, upload_limit_mb, 
     branch_path, full_tags, logic_type, branch_excludes = parse_branch_line(branch_line)
     
     # Initialize stats
-    run_stats[branch_line] = {'up_count': 0, 'up_bytes': 0, 'skip_count': 0, 'skip_bytes': 0}
+    run_stats[branch_line] = {'up_count': 0, 'up_bytes': 0, 'skip_count': 0, 'skip_bytes': 0,
+                              'fail_count': 0, 'failures': []}
     branch_stats = run_stats[branch_line]
 
     mount_point_to_cleanup = None
@@ -1405,25 +1457,36 @@ def process_branch_bags(bags, scan_path, short_name, is_live, branch_leaves, hos
 
     for tid in sorted_bag_ids:
         bag_data = bags[tid]
-        process_bag(
-            bag_data["bag_num_int"], 
-            bag_data["leaves"], 
-            scan_path, 
-            short_name, 
-            bag_data["size"], 
-            is_live, 
-            branch_leaves,
-            hostname,
-            branch_stats,
-            upload_limit_mb,
-            full_tags,
-            passphrase_file,
-            remote_conn,
-            remote_base_path,
-            inventory,
-            branch_excludes,
-            encryption_config
-        )
+        try:
+            process_bag(
+                bag_data["bag_num_int"],
+                bag_data["leaves"],
+                scan_path,
+                short_name,
+                bag_data["size"],
+                is_live,
+                branch_leaves,
+                hostname,
+                branch_stats,
+                upload_limit_mb,
+                full_tags,
+                passphrase_file,
+                remote_conn,
+                remote_base_path,
+                inventory,
+                branch_excludes,
+                encryption_config
+            )
+        except LeafStagingError as e:
+            # A single bag failed to stage (e.g. a transient rsync broken pipe).
+            # Record it, skip the bag, and keep going so one flaky leaf does not
+            # abort the entire cron run. The leaf is NOT committed to inventory,
+            # so it will be retried on the next run.
+            bag_name = f"{hostname}_{safe_prefix}_bag_{bag_data['bag_num_int']:05d}.tar"
+            print(f"\n[BAG FAILED] Skipping {bag_name}: {e}")
+            branch_stats['fail_count'] = branch_stats.get('fail_count', 0) + 1
+            branch_stats.setdefault('failures', []).append(f"{bag_name}: {e}")
+            continue
 
 
 def handle_repack_cleanup(hostname, safe_prefix, bag_counter, s3_client, S3_BUCKET, S3_PREFIX):
@@ -2430,10 +2493,16 @@ def stage_remote_leaf(remote_conn, remote_base_path, local_leaf_path, local_bran
     subpath = local_leaf_path.replace(prefix, "").lstrip('/')
     leaf_rel_path = subpath.rstrip('/')
     
-    # 2. Reconstruct the actual remote source
+    # 2. Reconstruct the actual remote source.
+    #    Do NOT shlex.quote() the remote path: rsync is launched via Popen
+    #    WITHOUT a shell (no shell=True), so any shell-quoting we add is sent to
+    #    the remote verbatim and mangles paths containing spaces, e.g.
+    #    "VirtualBox VMs" became /home/greenc/'/home/.../VirtualBox VMs/sheep'.
+    #    Instead pass the raw path and rely on rsync's --protect-args (see the
+    #    command below), which transmits remote args without word-splitting.
     remote_base = remote_base_path.rstrip('/')
-    remote_path_safe = shlex.quote(f"{remote_base}/{subpath}".rstrip('/'))
-    true_remote_src = f"{remote_conn}:{remote_path_safe}"
+    remote_path = f"{remote_base}/{subpath}".rstrip('/')
+    true_remote_src = f"{remote_conn}:{remote_path}"
 
     # Create the staging directory if it doesn't exist
     if not os.path.exists(stage_dir):
@@ -2475,8 +2544,10 @@ def stage_remote_leaf(remote_conn, remote_base_path, local_leaf_path, local_bran
     # -----------------------------------
 
     # 3. Build the rsync command
-    # Using --info=progress2 for a more machine-readable progress format
-    cmd = ['rsync', '-a', '--delete', '--inplace', '--info=progress2', '-e', 'ssh']
+    # Using --info=progress2 for a more machine-readable progress format.
+    # --protect-args: send remote paths/args without word-splitting so paths
+    # with spaces (e.g. "VirtualBox VMs") survive without shell quoting.
+    cmd = ['rsync', '-a', '--delete', '--inplace', '--protect-args', '--info=progress2', '-e', 'ssh']
     if exclude_args: cmd.extend(exclude_args)
     cmd.extend([f"{true_remote_src}/", f"{stage_dir}/"])
 
