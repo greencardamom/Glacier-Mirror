@@ -16,6 +16,7 @@
 
 import os
 import sys
+import signal
 
 # Critical dependencies check first
 try:
@@ -3942,19 +3943,88 @@ def main():
 
     args = parser.parse_args()
 
-    # --- SELECTIVE SILENCE BUFFER ---
-    # Capture all stdout. Only release it if work is performed or an error occurs.
-    buffer = io.StringIO()
+    # --- DURABLE, SELECTIVE-SILENCE STDOUT ---
+    # One stream wrapper, two jobs:
+    #   1. DURABILITY: when running unattended (--cron) or mutating (--run),
+    #      every write is mirrored to logs/glacier.run.log and flushed
+    #      immediately (and fsync'd on each newline) -- so a kill, reboot, OOM,
+    #      or power loss leaves the run's history on disk instead of dying in an
+    #      in-memory buffer. This is the crash-proof record.
+    #   2. SELECTIVE SILENCE: terminal/backup.log output is still buffered in
+    #      --cron mode and only released when real work happens (or on
+    #      error/signal), keeping no-op nightly runs quiet.
+    class _DurableTee:
+        def __init__(self, original, disk):
+            self._original = original
+            self._disk = disk
+            self._buffer = io.StringIO()
+            self.unmuzzled = False
+        def write(self, s):
+            if self._disk is not None:
+                self._disk.write(s)
+                self._disk.flush()
+                if '\n' in s:
+                    try:
+                        os.fsync(self._disk.fileno())   # survive power loss, not just process death
+                    except (OSError, ValueError):
+                        pass
+            (self._original if self.unmuzzled else self._buffer).write(s)
+            return len(s)
+        def flush(self):
+            if self._disk is not None:
+                self._disk.flush()
+            if self.unmuzzled:
+                self._original.flush()
+        def release(self):
+            # Dump the captured buffer to the real stdout (backup.log) and route
+            # all further writes there too. Disk mirroring continues regardless.
+            if not self.unmuzzled:
+                self._original.write(self._buffer.getvalue())
+                self._original.flush()
+                self._buffer = io.StringIO()
+                self.unmuzzled = True
+
     original_stdout = sys.stdout
-    sys.stdout = buffer
-    is_unmuzzled = False
+    _disk_log = None
+    if args.cron or args.run:
+        _log_dir = os.path.join(os.path.dirname(config_path), 'logs')
+        os.makedirs(_log_dir, exist_ok=True)
+        _disk_log = open(os.path.join(_log_dir, 'glacier.run.log'), 'a', buffering=1)
+    _tee = _DurableTee(original_stdout, _disk_log)
+    sys.stdout = _tee
 
     def ensure_unmuzzled():
-        nonlocal is_unmuzzled
-        if not is_unmuzzled:
-            sys.stdout = original_stdout
-            print(buffer.getvalue(), end='') # Flush captured buffer
-            is_unmuzzled = True
+        _tee.release()
+
+    # Delimit this invocation in the durable log. This lands on disk even when
+    # the run is a silent no-op that never releases anything to backup.log,
+    # giving proof-of-execution and a per-write trail that survives a hard kill.
+    if _disk_log is not None:
+        print(f"\n{'='*70}")
+        print(f"[RUN START] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  pid={os.getpid()}  args={' '.join(sys.argv[1:])}")
+        print(f"{'='*70}")
+
+    # --- SIGNAL FLUSH HANDLER ---
+    # In --cron mode all output sits in `buffer` and is only flushed on a
+    # graceful [COMPLETE] or via the except: [CRITICAL ERROR] path. A signal
+    # (systemd shutdown/reboot sends SIGTERM, `kill`, `timeout`) would otherwise
+    # kill us with the buffer still in memory, leaving backup.log silent and the
+    # run invisible. Catch the catchable signals, flush whatever we captured so
+    # far, and exit. (SIGKILL and a hard power loss are uncatchable -- nothing
+    # can be done there; this only covers orderly terminations.)
+    def _flush_on_signal(signum, frame):
+        try:
+            ensure_unmuzzled()
+            name = signal.Signals(signum).name
+            print(f"\n[SIGNAL] Received {name} ({signum}) -- flushing partial log and aborting.")
+            print(f"[SIGNAL] Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            sys.stdout.flush()
+        finally:
+            # 128 + signum is the conventional shell exit code for signal death.
+            os._exit(128 + signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(_sig, _flush_on_signal)
 
     try:
         # If we are NOT in cron mode, unmuzzle immediately for a snappy CLI feel.
@@ -4270,12 +4340,15 @@ def main():
             pass
 
     except Exception as e:
-        # EMERGENCY UNMUZZLE: Print whatever was in the buffer + the error
-        sys.stdout = original_stdout
-        print(buffer.getvalue(), end='') 
+        # EMERGENCY UNMUZZLE: release the captured buffer to backup.log, and keep
+        # writing through the tee so the crash is recorded in the durable disk log.
+        try:
+            ensure_unmuzzled()
+        except Exception:
+            sys.stdout = original_stdout
         print(f"\n[CRITICAL ERROR] {e}")
         import traceback
-        traceback.print_exc()
+        traceback.print_exc(file=sys.stdout)
         sys.exit(1)
 
 if __name__ == "__main__":
