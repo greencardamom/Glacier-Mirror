@@ -1105,13 +1105,19 @@ def cleanup_files(tar_path, temp_files_to_clean):
 
 def commit_to_inventory(leaf_list, branch_leaves, inventory, is_live, bag_num, etag=None):
     """Update inventory with successful upload information."""
+    now = datetime.now().isoformat()
+    target_tar_id = f"bag_{bag_num:05d}"
+
+    # One tar -> one etag: stamp every leaf in this bag (queued leaves plus any
+    # unchanged-but-repacked siblings sharing the tar_id), not just leaf_list.
+    keys_to_stamp = {leaf['key'] for leaf in leaf_list if leaf.get('key') in branch_leaves}
+    keys_to_stamp |= {k for k, d in branch_leaves.items() if d.get('tar_id') == target_tar_id}
+
     # Update local manifest/inventory
-    for leaf in leaf_list:
-        key = leaf['key']
-        if key in branch_leaves:
-            branch_leaves[key]['needs_upload'] = False
-            branch_leaves[key]['last_upload'] = datetime.now().isoformat()
-            branch_leaves[key]['etag'] = etag  # etag needs to be passed in or returned from upload_to_s3
+    for key in keys_to_stamp:
+        branch_leaves[key]['needs_upload'] = False
+        branch_leaves[key]['last_upload'] = now
+        branch_leaves[key]['etag'] = etag
 
     # Save inventory to disk
     if is_live:
@@ -1691,8 +1697,10 @@ def audit_s3(inventory):
             inv_etag = details.get('etag')
             size = details.get('size_bytes', 0)
             if key not in expected_bags:
-                expected_bags[key] = {'size': 0, 'etag': inv_etag}
+                expected_bags[key] = {'size': 0, 'etag': inv_etag, 'etags': set()}
             expected_bags[key]['size'] += size
+            if inv_etag:
+                expected_bags[key]['etags'].add(inv_etag)
 
     # 2. Get actual list from S3 (Now fetching StorageClass too)
     print(f"  [FETCHING] Remote file list from s3://{S3_BUCKET}/{S3_PREFIX}...")
@@ -1717,24 +1725,30 @@ def audit_s3(inventory):
     # 3. Perform the Audit
     missing = []
     corruption = []
+    inconsistent = []
     cost_warnings = []
-    
+
     total_audited = len(expected_bags)
     verified_with_etag = 0
-    
+
     for bag_key, info in expected_bags.items():
         # A) Check Existence
         if bag_key not in actual_s3_data:
             missing.append(bag_key)
             continue
-            
+
         s3_obj = actual_s3_data[bag_key]
-        
+
         # B) Check Integrity
-        if info['etag']:
+        if info['etags']:
             verified_with_etag += 1
-            if info['etag'] != s3_obj['etag']:
+            if s3_obj['etag'] not in info['etags']:
+                # S3 matches none of the recorded leaf etags -> real mismatch.
                 corruption.append(bag_key)
+            elif len(info['etags']) > 1:
+                # One tar must have one etag; leaves disagreeing means stale
+                # inventory bookkeeping even though S3 itself is fine.
+                inconsistent.append(bag_key)
         
         # C) Check Storage Class (Cost Safety)
         # We want GLACIER or DEEP_ARCHIVE. Anything else is expensive.
@@ -1742,7 +1756,7 @@ def audit_s3(inventory):
             cost_warnings.append(f"{bag_key} ({s3_obj['class']})")
 
     # 4. Reporting
-    if not missing and not corruption and not cost_warnings:
+    if not missing and not corruption and not inconsistent and not cost_warnings:
         print(f"  [OK] All {total_audited} expected bags are present and verified.")
         print(f"  [OK] Storage classes verified (Deep Archive).")
     else:
@@ -1752,6 +1766,9 @@ def audit_s3(inventory):
         if corruption:
             print(f"[CRITICAL] {len(corruption)} bags FAILED hash integrity check!")
             for c in corruption: print(f"          MISMATCH: {c}")
+        if inconsistent:
+            print(f"[WARN] {len(inconsistent)} bags have INCONSISTENT leaf etags (S3 ok, inventory stale):")
+            for b in inconsistent: print(f"          INCONSISTENT: {b}")
         if cost_warnings:
             print(f"[COST WARN] {len(cost_warnings)} bags are in the WRONG storage tier (High Cost):")
             for w in cost_warnings: print(f"          {w}")
