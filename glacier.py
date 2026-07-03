@@ -560,13 +560,11 @@ def construct_tar_command(tar_path, leaf_list, branch_root, designator, passphra
             f"({len(leaf_list)} leaf/leaves) — refusing to build an empty archive."
         )
 
-    # 4. Optimize tar arguments for efficiency
-    optimized_args = optimize_tar_arguments(tar_sequence)
+    # 4. Generate the tar command(s), chunked so no single shell command
+    #    exceeds the kernel's per-argument limit (avoids E2BIG on huge branches).
+    cmds = generate_tar_commands(tar_path, exclude_args, tar_sequence)
 
-    # 5. Generate the final command
-    cmd = generate_final_tar_command(tar_path, exclude_args, optimized_args)
-
-    return cmd, temp_files_to_clean
+    return cmds, temp_files_to_clean
 
 
 def build_exclude_arguments(excludes=None):
@@ -774,19 +772,52 @@ def optimize_tar_arguments(tar_sequence):
     return optimized_args
 
 
-def generate_final_tar_command(tar_path, exclude_flag, optimized_args):
+# Keep each shell command well under the kernel's MAX_ARG_STRLEN (128 KB per
+# single argument). With shell=True the whole command is one argv string to
+# /bin/sh -c, so a branch with thousands of leaves would otherwise blow past it
+# with E2BIG ("Argument list too long"). 100 KB leaves headroom for the prefix.
+MAX_TAR_CMD_LEN = 100_000
+
+def generate_tar_commands(tar_path, exclude_flag, tar_sequence):
     """
-    Generate the final tar command string.
-    
+    Generate one or more tar command strings, chunking the member list so no
+    single shell command exceeds MAX_TAR_CMD_LEN. The first chunk creates the
+    archive (-cf); subsequent chunks append to it (-rf). Each chunk is optimized
+    independently so it re-emits its own leading -C context, making the split
+    safe regardless of where it falls.
+
     Returns:
-        str: Complete tar command
+        list[str]: ordered tar commands to run sequentially
     """
     # Check if GNU tar is available for sparse file support
     is_gnu = "GNU" in subprocess.getoutput("tar --version")
     sparse_flag = "-S" if is_gnu else ""
+    prefix = " ".join(p for p in ("tar", sparse_flag, exclude_flag) if p)
 
-    cmd = f"tar {sparse_flag} {exclude_flag} -cf {shlex.quote(tar_path)} {' '.join(optimized_args)}"    
-    return cmd
+    cmds = []
+    chunk = []          # list of (context, arg) tuples
+    chunk_len = 0
+
+    def flush():
+        nonlocal chunk, chunk_len
+        if not chunk:
+            return
+        op = "-cf" if not cmds else "-rf"   # first chunk creates, rest append
+        args = optimize_tar_arguments(chunk)
+        cmds.append(f"{prefix} {op} {shlex.quote(tar_path)} {' '.join(args)}")
+        chunk = []
+        chunk_len = 0
+
+    for context, arg in tar_sequence:
+        # Worst case this entry also forces a fresh "-C <context> " re-emit.
+        piece = len(arg) + len(context) + 8
+        if chunk and chunk_len + piece > MAX_TAR_CMD_LEN:
+            flush()
+        chunk.append((context, arg))
+        chunk_len += piece
+
+    flush()
+    return cmds
 
 def process_bag(bag_num, leaf_list, branch_root, short_name, bag_size_bytes, is_live, branch_leaves, hostname, branch_stats, upload_limit_mb, designator, passphrase_file, remote_conn, remote_base_path, inventory, excludes=None, encryption_config=None):
     """
@@ -987,19 +1018,21 @@ def build_tar_archive(tar_path, leaf_list, branch_root, designator, passphrase_f
 
     try:
         # 1. Process Child Leaves (Indented 7 spaces)
-        cmd, temp_files_to_clean = construct_tar_command(
+        cmds, temp_files_to_clean = construct_tar_command(
             tar_path, leaf_list, branch_root, designator, passphrase_file,
-            branch_leaves, remote_conn, remote_base_path, excludes, 
+            branch_leaves, remote_conn, remote_base_path, excludes,
             encryption_config, hb=hb
         )
 
         # 2. Transition back to Bag Level (Indented 5 spaces)
-        sys.stdout.write("\n") 
+        sys.stdout.write("\n")
         hb.update_target(tar_path, new_status="BAG: TAR", target_size=bag_size_bytes)
-        
-        # 3. Final Packaging
-        subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        
+
+        # 3. Final Packaging. cmds is chunked: the first creates the archive,
+        #    any subsequent commands append to it. Run them in order.
+        for cmd in cmds:
+            subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
         hb.snap_done()
         hb.stop()
         return temp_files_to_clean
