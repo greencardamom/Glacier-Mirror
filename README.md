@@ -16,12 +16,9 @@ See LICENSE.md for more details.
 **Created:** January 2026  
 **Author:** Greenc
 
-A Python tool for mirroring your backups on Amazon's S3 "Glacier" Deep Archive. For many people (1 to 50 TB) cloud-based 
-tape backup is cheaper than buying a tape drive yourself, and definitely easier and more secure.
+A Python tool for mirroring your backups on Amazon's S3 "Glacier" Deep Archive. For many people (1 to 50 TB) cloud-based tape backup is cheaper than buying a tape drive youself, and definitely easier and more secure.
 
-Check out [Tape Backup Cost Analysis](tape-cost-analysis.md) to determine when buying your own tape drive becomes 
-cost-effective (at about 50TB). Until then, cloud-based backup to tape is a very good option technically and financially. 
-This Python script makes it easy to manage.
+Check out [Tape Backup Cost Analysis](tape-cost-analysis.md) to determine when buying your own tape drive becomes cost-effective (at about 50TB). Until then, cloud-based backup to tape is a very good option technically and financially. This Python script makes it easy to manage.
 
 ## Table of Contents
 1. [Introduction](#1-introduction-the-tape-backup-insurance-policy)
@@ -139,6 +136,8 @@ Before running the system, ensure the following are installed:
       * *[branch name] is found in `--show-tree`. In the [branch name] do not include any `::TAGS`*
     * `./glacier-mirror --show-bag [bag name]`
       * *[bag name] is found in `--show-branch`. Do not include any `::TAGS`*
+    * `./glacier-mirror --show-run`
+      * *What the run just did (bags uploaded, sizes, duration). Add `list` for an index, or a date to pick one.*
     * `more inventory.json`
       * View the database and its elements.
     * `./glacier.py --mirror-branch [branch name] --force-reset --run`
@@ -354,6 +353,24 @@ Tools to view your archive without modifying data.
 
 * **`--show-branch`**: Lists all leaves contained inside a specific `tar_id` or bag ID (e.g., bag_00042).
   * Run `./glacier.py --show-bag bag_00042`
+
+* **`--show-run`**: Reports what a specific backup *run* actually did — the bags it uploaded, their sizes, and how long it took. Where `--show-tree` shows current inventory *state*, `--show-run` shows the *events* of a run, reconstructed from the `aws.log` transaction ledger.
+  * Run `./glacier.py --show-run` — detail for the most recent run
+  * Run `./glacier.py --show-run list` — an index of all runs, most recent first
+  * Run `./glacier.py --show-run 2026-07-03` — detail for the run on that date
+
+  * **What the detail view shows**:
+    * **Per-bag uploads**: every bag committed during the run, with its local timestamp and size.
+    * **Totals & duration**: total bags, total bytes, and wall-clock run time.
+    * **Failures**: any `[CRITICAL ERROR]`/`[BAG FAILED]`/`[FATAL]` lines from that run's `backup.log` block, cross-referenced automatically.
+
+  * **Run status** (shown in `list`):
+    * **COMPLETE**: the run finished cleanly (its `RUN_END` marker is present).
+    * **ERROR**: the run crashed; the process recorded a failed `RUN_END`.
+    * **INCOMPLETE**: a `RUN_START` with no `RUN_END` — the run was killed, froze, or lost power before finishing.
+    * **(inferred)**: reconstructed from ledger time-gaps, for runs that predate run markers.
+
+  * **How it works**: each real (`--run`) invocation writes `RUN_START`/`RUN_END` records into `aws.log`, keyed by the run's local start time — the same timestamp used in the `backup.log` run header, so the two logs line up. Runs from before this feature have no markers and are inferred by clustering uploads that are separated by gaps greater than 3 hours.
 
 * **`--find`**: Searches all local manifests for a specific filename. Useful for checking in which bag a file exists.
   * Run `./glacier.py --find "my_important_doc.pdf"`

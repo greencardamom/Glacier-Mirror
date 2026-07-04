@@ -3018,6 +3018,177 @@ def show_tree(inventory):
     print("TAG KEY: (M)utable, (I)mmutable, (C)ompress, (E)ncrypt, (L)ocked")
     print("="*115 + "\n")
 
+
+def _load_runs_from_ledger():
+    """
+    Reconstruct runs from the aws.log ledger. Runs delimited by RUN_START/RUN_END
+    markers are exact; UPLOADs with no enclosing markers (history from before this
+    feature) are clustered by a >3h time gap and flagged 'inferred'.
+
+    Returns a list of run dicts (oldest first):
+      run_id, start_utc, end_utc, status, source ('marked'|'inferred'), uploads[]
+    where each upload is {ts (local str), key, size}.
+    """
+    log_file = os.path.join(os.path.dirname(config_path), 'logs', 'aws.log')
+    if not os.path.exists(log_file):
+        return []
+
+    GAP = timedelta(hours=3)
+    runs = []
+    cur = None           # currently open marked run
+    inferred = None      # currently open inferred run
+    last_up = None       # last upload time (for gap detection in inferred mode)
+
+    def to_local(iso):
+        try:
+            return datetime.fromisoformat(iso).astimezone()
+        except (ValueError, TypeError):
+            return None
+
+    with open(log_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            action = e.get("action")
+
+            if action == "RUN_START":
+                if inferred:                      # close any open inferred cluster
+                    runs.append(inferred); inferred = None
+                cur = {"run_id": e.get("run_id"), "start_utc": e.get("timestamp"),
+                       "end_utc": None, "status": "INCOMPLETE", "source": "marked",
+                       "uploads": []}
+                runs.append(cur)
+            elif action == "RUN_END":
+                if cur:
+                    cur["end_utc"] = e.get("timestamp")
+                    cur["status"] = e.get("status", "COMPLETE")
+                    cur = None
+            elif action == "UPLOAD":
+                lt = to_local(e.get("timestamp"))
+                up = {"ts": lt.strftime("%Y-%m-%d %H:%M:%S") if lt else "?",
+                      "key": (e.get("archive_key") or "").split("/")[-1],
+                      "size": e.get("size_bytes", 0)}
+                if cur is not None:               # inside an explicit run
+                    cur["uploads"].append(up)
+                else:                             # legacy: cluster by gap
+                    if inferred is None or (last_up and lt and lt - last_up > GAP):
+                        if inferred:
+                            runs.append(inferred)
+                        inferred = {"run_id": up["ts"], "start_utc": e.get("timestamp"),
+                                    "end_utc": e.get("timestamp"), "status": "(inferred)",
+                                    "source": "inferred", "uploads": []}
+                    inferred["uploads"].append(up)
+                    inferred["end_utc"] = e.get("timestamp")
+                last_up = lt
+    if inferred:
+        runs.append(inferred)
+    return runs
+
+
+def _run_duration(run):
+    """Human 'Hh Mm' between a run's start and end (or last upload)."""
+    try:
+        s = datetime.fromisoformat(run["start_utc"])
+        e = datetime.fromisoformat(run["end_utc"])
+    except (ValueError, TypeError):
+        return "—"
+    secs = int((e - s).total_seconds())
+    if secs < 0:
+        return "—"
+    return f"{secs // 3600}h {secs % 3600 // 60:02d}m"
+
+
+def show_run(selector=None):
+    """
+    Report what a run actually did, reconstructed from the aws.log ledger.
+      selector None/'' -> most recent run (detail)
+      selector 'list'  -> index of all runs
+      selector <date>  -> run(s) whose run_id starts with <date> (detail if one)
+    """
+    runs = _load_runs_from_ledger()
+    if not runs:
+        print("\nNo runs found in the ledger (logs/aws.log).")
+        return
+
+    if selector == "list":
+        _print_run_list(runs)
+        return
+
+    if selector and selector != "__LATEST__":
+        matches = [r for r in runs if (r.get("run_id") or "").startswith(selector)]
+        if not matches:
+            print(f"\nNo run matching '{selector}'. Try: glacier --show-run list")
+            return
+        if len(matches) > 1:
+            print(f"\n{len(matches)} runs match '{selector}':\n")
+            _print_run_list(matches)
+            return
+        _print_run_detail(matches[0])
+        return
+
+    _print_run_detail(runs[-1])   # most recent
+
+
+def _print_run_list(runs):
+    print(f"\n{'='*78}")
+    print(f"{'RUN STARTED':<22}{'STATUS':<13}{'BAGS':>5}{'SIZE':>12}{'DURATION':>11}")
+    print("-" * 78)
+    for r in reversed(runs):      # most recent first
+        n = len(r["uploads"])
+        sz = sum(u["size"] for u in r["uploads"])
+        note = "  (inferred)" if r["source"] == "inferred" else ""
+        print(f"{(r['run_id'] or '?'):<22}{r['status']:<13}{n:>5}{format_bytes(sz):>12}{_run_duration(r):>11}{note}")
+    print("=" * 78 + "\n")
+
+
+def _print_run_detail(run):
+    print(f"\n{'='*78}")
+    print(f"  RUN {run['run_id']}   [{run['status']}]" + ("   (inferred from ledger gaps)" if run["source"] == "inferred" else ""))
+    print("=" * 78)
+    if run["uploads"]:
+        print(f"{'TIME (local)':<22}{'SIZE':>12}   BAG")
+        print("-" * 78)
+        tot = 0
+        for u in run["uploads"]:
+            tot += u["size"]
+            print(f"{u['ts']:<22}{format_bytes(u['size']):>12}   {u['key']}")
+        print("-" * 78)
+        print(f"{'TOTAL':<22}{format_bytes(tot):>12}   {len(run['uploads'])} bag(s)  |  duration {_run_duration(run)}")
+    else:
+        print("  No bags uploaded (no-op run: nothing was due, or it failed before uploading).")
+
+    # Cross-reference this run's failures from backup.log (marked runs only).
+    if run["source"] == "marked":
+        fails = _backup_log_failures(run["run_id"])
+        if fails:
+            print("-" * 78)
+            print("  FAILURES logged in backup.log for this run:")
+            for line in fails:
+                print(f"    {line}")
+    print("=" * 78 + "\n")
+
+
+def _backup_log_failures(run_id):
+    """Collect failure-marker lines from the backup.log block for this run_id."""
+    log_file = os.path.join(os.path.dirname(config_path), 'logs', 'backup.log')
+    if not run_id or not os.path.exists(log_file):
+        return []
+    fails, in_block = [], False
+    with open(log_file, errors="ignore") as f:
+        for line in f:
+            if "Glacier Mirror cron run:" in line:
+                in_block = (run_id in line)
+                continue
+            if in_block and re.search(r"\[CRITICAL ERROR\]|\[BAG FAILED\]|\[FATAL\]|bag\(s\) failed to stage", line):
+                fails.append(line.strip())
+    return fails
+
+
 def log_aws_transaction(action, archive_key, size_bytes, etag, response_metadata, aukive):
     """
     Appends a permanent, auditable NDJSON record to the transaction ledger.
@@ -3059,6 +3230,36 @@ def log_aws_transaction(action, archive_key, size_bytes, etag, response_metadata
     except Exception as e:
         # Log failure must not crash the 2.24 TB production transfer
         print(f"\n    [!] LOGGING ERROR: Could not write to {log_file} ({e})")
+
+def log_run_marker(action, run_id, **extra):
+    """
+    Append a RUN_START / RUN_END delimiter to the aws.log ledger so a run can be
+    reconstructed later (see --show-run). These are distinct action types; readers
+    that filter on action == "UPLOAD" (e.g. audit_s3) ignore them. run_id is the
+    run's local start time ("YYYY-MM-DD HH:MM:SS", matching the backup.log run
+    header), shared by RUN_START and its RUN_END, tying the pair -- and the UPLOADs
+    logged between them -- to one run.
+    """
+    log_dir = os.path.join(os.path.dirname(config_path), 'logs')
+    log_file = os.path.join(log_dir, 'aws.log')
+    os.makedirs(log_dir, exist_ok=True)
+
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),  # UTC, when written
+        "action": action,                                     # RUN_START | RUN_END
+        "system": SYSTEM_NAME,
+        "version": VERSION,
+        "run_id": run_id,                                     # local start time (dedup/pair key)
+        "local_host": socket.gethostname(),
+    }
+    entry.update(extra)                                       # RUN_END adds status=
+
+    try:
+        with open(log_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+            f.flush()
+    except Exception as e:
+        print(f"\n    [!] LOGGING ERROR: Could not write run marker to {log_file} ({e})")
 
 def is_branch_ripe(branch_line, inventory, config):
     """
@@ -3967,6 +4168,8 @@ def main():
     view_group.add_argument('--show-branch', type=str, metavar="NAME", help='Show branch contents')
     view_group.add_argument('--show-leaf', type=str, metavar="PATH", help='Show leaf contents')
     view_group.add_argument('--show-bag', type=str, metavar="ID", help='Show leaves in a bag')
+    view_group.add_argument('--show-run', nargs='?', const='__LATEST__', metavar="list|DATE",
+                            help="What a run did (default: latest; 'list' for an index; or a date like 2026-07-03)")
 
     # --- 5. GPG MANAGEMENT
     key_group = parser.add_argument_group('GPG Management')
@@ -4076,6 +4279,8 @@ def main():
     for _sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(_sig, _flush_on_signal)
 
+    run_marker_id = None   # set when a RUN_START is written; gates the RUN_END
+
     try:
         # If we are NOT in cron mode, unmuzzle immediately for a snappy CLI feel.
         # This makes the buffer purely a "Cron Safety" mechanism.
@@ -4139,6 +4344,10 @@ def main():
 
         if args.show_tree:
             show_tree(inventory)
+            sys.exit(0)
+
+        if args.show_run:
+            show_run(args.show_run)
             sys.exit(0)
 
         if args.show_branch:
@@ -4347,11 +4556,19 @@ def main():
                 if current_path != target_path:
                     continue
             
+        # Mark the start of a real run in the ledger (skip dry runs). run_marker_id
+        # is the local start time, reused as the backup.log header so --show-run can
+        # cross-reference the two.
+        if args.run:
+            run_marker_id = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            log_run_marker("RUN_START", run_marker_id, args=" ".join(sys.argv[1:]))
+
         # --- CRON EXECUTION ---
         if args.cron:
             if not IS_TTY:
+                header_ts = run_marker_id if run_marker_id else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 print(f"\n{'='*60}")
-                print(f"  Glacier Mirror cron run: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"  Glacier Mirror cron run: {header_ts}")
                 print(f"{'='*60}")
             work_was_performed = run_smart_cron(inventory, tree_lines, config, args, encryption_config, PASSPHRASE_FILE)
         else:
@@ -4389,6 +4606,10 @@ def main():
             # (Buffer is discarded, nothing printed to real stdout)
             pass
 
+        # Close the run in the ledger (covers both work and clean no-op runs).
+        if run_marker_id:
+            log_run_marker("RUN_END", run_marker_id, status="COMPLETE")
+
     except Exception as e:
         # EMERGENCY UNMUZZLE: release the captured buffer to backup.log, and keep
         # writing through the tee so the crash is recorded in the durable disk log.
@@ -4396,6 +4617,9 @@ def main():
             ensure_unmuzzled()
         except Exception:
             sys.stdout = original_stdout
+        # Close the run in the ledger as failed, so --show-run shows it terminated.
+        if run_marker_id:
+            log_run_marker("RUN_END", run_marker_id, status="ERROR")
         print(f"\n[CRITICAL ERROR] {e}")
         import traceback
         traceback.print_exc(file=sys.stdout)
