@@ -32,7 +32,7 @@ except ImportError:
 VERSION = "1.0"
 SYSTEM_NAME = "Glacier Mirror"
 SYSTEM_DESCRIPTION = "Amazon S3 Glacier Deep Archive Tape Backup Management"
-DEFAULT_TREE_FILE = "tree.cfg"  # <--- Chang to rename the file globally
+DEFAULT_TREE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tree.cfg")  # anchored to the script dir so glacier.py works from any cwd (e.g. the cron-run monitor). Change "tree.cfg" to rename.
 
 # Standard library imports
 import re
@@ -4598,6 +4598,13 @@ def main():
             generate_summary(inventory, run_stats, args.run)
 
             if args.run:
+                # Final persist of the in-memory inventory. commit_to_inventory
+                # only saves per uploaded bag (before each branch's last_scan is
+                # stamped), so without this the LAST branch processed -- and every
+                # branch on a no-upload run -- would never persist its last_scan,
+                # leaving it perpetually "due" and re-scanned every night.
+                with open(INVENTORY_FILE, 'w') as f:
+                    json.dump(inventory, f, indent=4)
                 upload_system_artifacts()
 
             print("\n[COMPLETE] All backup jobs finished.")
