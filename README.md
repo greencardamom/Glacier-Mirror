@@ -16,9 +16,9 @@ See LICENSE.md for more details.
 **Created:** January 2026  
 **Author:** Greenc
 
-A Python tool for mirroring your backups on Amazon's S3 "Glacier" Deep Archive. For many people (1 to 50 TB) cloud-based tape backup is cheaper than buying a tape drive youself, and definitely easier and more secure.
+A Python tool for mirroring backups on Amazon's S3 "Glacier" Deep Archive. In many cases (1 to 50 TB) cloud-based tape backup is cheaper than buying a tape drive, and definitely easier and more secure.
 
-Check out [Tape Backup Cost Analysis](tape-cost-analysis.md) to determine when buying your own tape drive becomes cost-effective (at about 50TB). Until then, cloud-based backup to tape is a very good option technically and financially. This Python script makes it easy to manage.
+Check out [Tape Backup Cost Analysis](tape-cost-analysis.md) to determine when buying a tape drive becomes cost-effective (at about 50TB). Until then, cloud-based backup to tape is a very good option technically and financially. This Python script makes it easy to manage.
 
 ## Table of Contents
 1. [Introduction](#1-introduction-the-tape-backup-insurance-policy)
@@ -37,7 +37,7 @@ Check out [Tape Backup Cost Analysis](tape-cost-analysis.md) to determine when b
 ## 1. Introduction: The Tape Backup Insurance Policy
 
 ### The Problem
-You have multiple TBs of data stored locally on drives. Perhaps mirrored across multiple drives. But it is still not secure against catastrophic loss: fire, lightning, theft, magnetic degradation, filesystem corruption, etc. Buying an LTO tape drive is very expensive, a hassle to manage, and overkill for most cases. You want a solution that will continuously mirror the data to tape, at a tier-1 datacenter that is cheap, secure and that will provide peace of mind "forever".
+You have multiple TBs of data stored locally on drives. Perhaps mirrored across multiple drives. But it is still not secure against catastrophic loss: fire, lightning, theft, magnetic degradation, filesystem corruption, etc. Buying an LTO tape drive is very expensive, a hassle to manage, and overkill for most cases. Cold storage on hard drives presents other problems keeping up to date copies off-site. You want a solution that will continuously mirror the data to tape at a tier-1 datacenter that is cheap, secure and that will provide peace of mind "forever".
 
 ### The Solution: AWS S3 Deep Archive
 Enter "Glacier" Deep Archive, the AWS S3 tape backup service. It is cheap to upload and store (approx. **$1.00 per TB/month**). However, **restoring** is expensive for big things, and cheap for small things. This system aims to obtain the greatest benefit for the cheapest price.
