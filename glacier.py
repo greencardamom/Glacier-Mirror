@@ -453,6 +453,15 @@ def unmount_remote_branch(mount_point):
         print(f"--> Bridge: Disconnecting {mount_point}...")
         subprocess.run(["fusermount", "-u", mount_point], check=True)
 
+def tree_branch_paths(tree_file=DEFAULT_TREE_FILE):
+    """Branch paths currently in tree.cfg (text before ' ::'), used to spot stale inventory branches."""
+    try:
+        with open(tree_file, 'r') as f:
+            return {line.strip().split(' ::')[0].strip() for line in f if line.strip() and not line.lstrip().startswith("#")}
+    except OSError:
+        return None
+
+
 def generate_summary(inventory, run_stats, is_live):
     print("\n" + "="*105)
     print(f"{'INVENTORY STATE':<45} {'BAGS':<8} {'SIZE':<10} {'WASTE %':<10} {'REPACK RISK':<12}")
@@ -489,6 +498,22 @@ def generate_summary(inventory, run_stats, is_live):
     print("-" * 105)
     print(f"{'TOTALS':<45} {total_bags_global:<8} {format_bytes(total_size):<10} {'---':<10} {f'${total_risk:.2f}':>12}")
     print("="*105)
+
+    # Branches still in inventory.json but no longer in tree.cfg keep their bags on S3 (and keep billing); --prune does not remove them
+    current = tree_branch_paths()
+    if current is not None:
+        stale = []
+        for branch, data in inventory.get("branches", {}).items():
+            path = branch.split(' ::')[0].strip()
+            if path not in current:
+                leaves = data.get("leaves", {})
+                bags = len(set(l.get("tar_id") for l in leaves.values() if l.get("tar_id")))
+                stale.append((path, bags, sum(l.get("size_bytes", 0) for l in leaves.values())))
+        if stale:
+            print(f"\nSTALE BRANCHES: {len(stale)} in inventory.json but not in tree.cfg - still stored and billed on S3")
+            for path, bags, size in stale:
+                print(f"  {path:<60} {bags} bag(s)  {format_bytes(size)}")
+            print("  Retire each with: ./glacier.py --delete-branch '<path>' --run   (plain --prune does not remove these)")
 
     # --- TIME ESTIMATION ---
     # total size of leaves that actually NEED upload
